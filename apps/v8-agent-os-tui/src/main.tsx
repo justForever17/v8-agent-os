@@ -67,7 +67,16 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   let selectedRow = -1;
   const page = surface.page;
   if (page) {
-    const content = wrap([page.title, ...page.lines].join('\n'), columns);
+    const tabHeaders = page.tabs && page.tabs.length > 0 ? page.tabs.map((tab, idx) => {
+      const active = (page.activeTab ?? 0) === idx;
+      return active ? `[● ${tab}]` : `[  ${tab}]`;
+    }).join('  ') : '';
+    const headerLines = [
+      page.title,
+      ...(tabHeaders ? [tabHeaders, '─'.repeat(Math.min(safeColumns, 76))] : []),
+      ...page.lines,
+    ];
+    const content = wrap(headerLines.join('\n'), columns);
     page.offset = Math.max(0, Math.min(page.offset, Math.max(0, content.length - Math.max(1, historyHeight - 5))));
     const actionCount = Math.min(Math.max(2, Math.floor(historyHeight / 2)), page.actions.length);
     const actionStart = Math.max(0, page.selected - actionCount + 1);
@@ -100,7 +109,7 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   surface.unread = pausedUpdates.update(client.messages, surface.following);
   const hint = client.pendingApproval && !surface.page && !menu && !mentionMenu
     ? (columns < 60 ? 'Y 批准 · N 拒绝 · A 放行 · D 详情' : '【安全审批拦截】Y 批准本次 · N 拒绝 · A 本会话允许 · D 详情')
-    : mentionMenu ? (columns < 60 ? '←→分组 ↑↓选择 Tab补全 Enter确认 Esc取消' : '←→切换分组 · ↑↓选择 · Tab补全 · Enter确认 · Esc取消并恢复草稿') : menu ? (columns < 40 ? '↑↓选 Tab补 ↵执行 Esc返' : columns < 60 ? '↑↓选择 Tab补全 Enter执行 Esc返回' : '↑↓ 选择 · Tab 补全 · Enter 执行 · Esc 返回草稿 · Ctrl+P 完整菜单') : page?.fields ? 'Tab 切换字段 · F9 保存/预览 · Esc 返回' : page ? '↑↓/Tab 选择 · Enter 执行 · PgUp/PgDn 阅读 · Esc 返回' : 'Enter 发送 · F8 多行 · Ctrl+P 操作 · F1 帮助 · Ctrl+D 退出';
+    : mentionMenu ? (columns < 60 ? '←→分组 ↑↓选择 Tab补全 Enter确认 Esc取消' : '←→切换分组 · ↑↓选择 · Tab补全 · Enter确认 · Esc取消并恢复草稿') : menu ? (columns < 40 ? '↑↓选 Tab补 ↵执行 Esc返' : columns < 60 ? '↑↓选择 Tab补全 Enter执行 Esc返回' : '↑↓ 选择 · Tab 补全 · Enter 执行 · Esc 返回草稿 · Ctrl+P 完整菜单') : page?.tabs ? (columns < 60 ? '←→切卡 ↑↓选 ↵执行 Esc返' : '←→ 切换选项卡 · ↑↓ 选择 · Enter 执行/配置 · Esc 返回') : page?.fields ? 'Tab 切换字段 · F9 保存/预览 · Esc 返回' : page ? '↑↓/Tab 选择 · Enter 执行 · PgUp/PgDn 阅读 · Esc 返回' : 'Enter 发送 · F8 多行 · Ctrl+P 操作 · F1 帮助 · Ctrl+D 退出';
   return <Box flexDirection="column" width={columns} height={rows}>
     <Text bold>{clip(localize(label, locale), safeColumns)}</Text><Text dimColor>{'─'.repeat(safeColumns)}</Text>
     <Box height={historyHeight}>

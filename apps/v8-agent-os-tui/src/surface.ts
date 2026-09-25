@@ -18,7 +18,7 @@ import { isSpecApproval, readSpecReview, specReviewMatches, type SpecReviewDocum
 
 export type Action = CommandEntry & { run: () => void | Promise<void>; navigation?: boolean };
 export type Field = { key: string; label: string; value: string; secret?: boolean };
-export type Page = { title: string; lines: string[]; actions: Action[]; selected: number; offset: number; fields?: Field[]; fieldIndex?: number; onSave?: (fields: Record<string, string>) => Promise<void>; sensitive?: boolean; localizeLines?: boolean };
+export type Page = { title: string; lines: string[]; actions: Action[]; selected: number; offset: number; fields?: Field[]; fieldIndex?: number; onSave?: (fields: Record<string, string>) => Promise<void>; sensitive?: boolean; localizeLines?: boolean; tabs?: string[]; activeTab?: number; onTabChange?: (tabIndex: number) => void | Promise<void> };
 const listOf = (data: any): any[] => Array.isArray(data) ? data : data.items || data.devices || data.peers || data.links || data.packs || data.models || [];
 export const secretField = (key: string) => /(?:apikey|accesstoken|refreshtoken|idtoken|bearertoken|authtoken|sessiontoken|apitoken|csrftoken|pairingcode|privatekey|signingkey|secret|password)$|^(?:token|authorization|cookie|credentials?)$/i.test(key.replace(/[-_]/g, ''));
 export function containsSecretField(value: unknown): boolean {
@@ -448,7 +448,8 @@ export class Surface {
       || event.key === 'text' && event.text === '/' && !this.input.text && !this.page
       || event.key === 'enter' && Boolean(!this.page?.fields && this.page?.actions[this.page.selected]?.navigation);
     const browse = !this.page?.fields && ['up', 'down', 'pageup', 'pagedown', 'tab', 'backtab'].includes(event.key)
-      || this.page?.title === '操作菜单' && ['text', 'backspace'].includes(event.key);
+      || this.page?.title === '操作菜单' && ['text', 'backspace'].includes(event.key)
+      || Boolean(this.page?.tabs) && ['left', 'right'].includes(event.key);
     if (pending && !navigate && !browse) {
       if (!this.page && ['text', 'paste'].includes(event.key)) {
         if (this.client.busy) {
@@ -474,9 +475,9 @@ export class Surface {
     }
     finally { this.pendingOperations.delete(operation); this.updateBusy(); this.changed(); }
   }
-  open(title: string, lines: string[], actions: Action[] = []) {
+  open(title: string, lines: string[], actions: Action[] = [], options: Partial<Page> = {}) {
     this.checkPage();
-    this.suggestions = null; this.mentionSuggestions = null; ++this.mentionRequest; this.pageSerial++; this.page = { title, lines, actions, selected: 0, offset: 0 }; this.changed();
+    this.suggestions = null; this.mentionSuggestions = null; ++this.mentionRequest; this.pageSerial++; this.page = { title, lines, actions, selected: 0, offset: 0, ...options }; this.changed();
   }
   async close(force = false) {
     this.checkPage();
@@ -550,31 +551,151 @@ export class Surface {
   }
   async submit() {
     const text = this.client.draft.text.trim();
-    if (text.startsWith('/resume')) {
-      const targetId = text.slice(7).trim();
-      this.client.setDraft('');
-      this.input = editor('');
-      if (targetId) {
-        await this.client.attach(targetId);
-        this.following = true;
-      } else {
-        await this.sessions();
+    if (text.startsWith('/')) {
+      const parts = text.split(/\s+/);
+      const command = (parts[0] || '').toLowerCase();
+      const args = text.slice(parts[0].length).trim();
+      if (command === '/resume' || command === '/sessions') {
+        this.client.setDraft('');
+        this.input = editor('');
+        if (args) {
+          await this.client.attach(args);
+          this.following = true;
+        } else {
+          await this.sessions();
+        }
+        return;
       }
-      return;
+      if (command === '/model' || command === '/models') {
+        this.client.setDraft('');
+        this.input = editor('');
+        await this.modelsHub();
+        return;
+      }
+      if (command === '/new' || command === '/clear') {
+        this.client.setDraft('');
+        this.input = editor('');
+        await this.newSession();
+        return;
+      }
+      if (command === '/workspace') {
+        this.client.setDraft('');
+        this.input = editor('');
+        this.workspaceManager();
+        return;
+      }
+      if (command === '/mcp') {
+        this.client.setDraft('');
+        this.input = editor('');
+        await this.extensions();
+        return;
+      }
+      if (command === '/doctor' || command === '/status') {
+        this.client.setDraft('');
+        this.input = editor('');
+        await this.readPage('系统诊断', '/v1/client-identity/instance');
+        return;
+      }
+      if (command === '/settings' || command === '/config') {
+        this.client.setDraft('');
+        this.input = editor('');
+        await this.settings();
+        return;
+      }
+      if (command === '/inbox') {
+        this.client.setDraft('');
+        this.input = editor('');
+        await this.inbox();
+        return;
+      }
+      if (command === '/help') {
+        this.client.setDraft('');
+        this.input = editor('');
+        this.help();
+        return;
+      }
+      if (command === '/approval') {
+        this.client.setDraft('');
+        this.input = editor('');
+        const approvalAction = this.commands().find(c => c.command === 'approval');
+        if (approvalAction) await approvalAction.run();
+        return;
+      }
+      if (command === '/exit' || command === '/quit') {
+        this.client.setDraft('');
+        this.input = editor('');
+        this.onExit();
+        return;
+      }
     }
     const atData = await this.resolveStructuredAtMentions();
     await this.attachAtFiles();
     await this.client.submit(atData);
     this.input = editor(this.client.draft.text); this.following = true;
   }
+  async modelsHub(tabIndex = 0) {
+    const { modelsHub } = await import('./model-pages.js');
+    await modelsHub(this, tabIndex);
+  }
+  async roleModelAssignmentTabs(activeRoleTab = 0) {
+    const { roleModelAssignmentTabs } = await import('./model-pages.js');
+    await roleModelAssignmentTabs(this, activeRoleTab);
+  }
+  workspaceManager() {
+    this.open('工作区管理 / Workspace', [
+      `当前工作区：${this.client.workspace || '尚未选择工作区'}`,
+      `工作区状态：${this.client.workspace ? '● 已就绪并信任' : '○ 待选择'}`,
+      '',
+      '提示：登记已有目录作为工作区，Engine 会校验目录并建立受信凭据。',
+    ], [
+      { label: '选择并切换工作区', run: () => this.form('选择工作区', [{ key: 'path', label: '已有目录的绝对路径', value: this.client.view.workspace }], async v => {
+        await this.client.trustWorkspace(v.path);
+        this.client.notice = `已将工作区切换至：${v.path}`;
+        await this.close(true);
+      }, ['只登记已有目录；Engine 会校验并回读 trusted 状态。']) },
+      { label: '返回对话', run: () => this.close(true) },
+    ]);
+  }
   async sessions() {
     await this.client.listSessions();
-    this.open('会话', ['选择只恢复查看；退出终端时会释放前台 Engine。'], [
-      { label: '新建会话', run: () => this.newSession() },
-      { label: '搜索会话', run: () => this.form('搜索会话', [{ key: 'q', label: '标题关键词', value: '' }], async v => { await this.client.listSessions(v.q); this.sessionResults(); }) },
-      { label: '当前工作区', run: async () => { await this.client.listSessions('', false, true); this.sessionResults(); } },
-      ...this.sessionActions(),
-    ]);
+    const sessions = this.client.sessions || [];
+    const currentId = this.client.view.sessionId;
+    const sessionActions: Action[] = sessions.map(s => {
+      const isCurrent = idOf(s) === currentId;
+      const title = s.title || '未命名会话';
+      const status = s.status ? ` · ${s.status}` : '';
+      const badge = isCurrent ? '● [当前] ' : '○ ';
+      return {
+        label: `${badge}${title}${status}`,
+        navigation: true,
+        run: async () => {
+          if (!isCurrent) {
+            await this.client.attach(idOf(s));
+            this.input = editor(this.client.draft.text);
+            this.following = true;
+          }
+          await this.close(true);
+        },
+      };
+    });
+    if (this.client.sessionCursor) {
+      sessionActions.push({ label: '加载更多会话...', run: async () => { await this.client.listSessions(undefined, true); this.sessionResults(); } });
+    }
+    const actions: Action[] = [
+      ...sessionActions,
+      { label: '＋ 新建全新会话', run: () => this.newSession() },
+      { label: '🔍 搜索会话标题...', run: () => this.form('搜索会话', [{ key: 'q', label: '标题关键词', value: '' }], async v => { await this.client.listSessions(v.q); this.sessionResults(); }) },
+      { label: '📁 仅查看当前工作区会话', run: async () => { await this.client.listSessions('', false, true); this.sessionResults(); } },
+      { label: '返回对话', run: () => this.close(true) },
+    ];
+    this.open('会话', [
+      '↑↓ 选择会话 · Enter 直接切换 · Esc 返回草稿',
+      `共 ${sessions.length} 个历史会话${currentId ? `（当前会话：${currentId.slice(0, 8)}...）` : ''}`,
+    ], actions);
+    if (this.page && sessions.length > 0) {
+      const firstOther = sessions.findIndex(s => idOf(s) !== currentId);
+      this.page.selected = firstOther >= 0 ? firstOther : 0;
+    }
   }
   sessionActions(): Action[] {
     const actions: Action[] = this.client.sessions.map(s => ({ label: `${s.title || '未命名'} · ${s.status || '历史'}`, navigation: true, run: async () => { await this.client.attach(idOf(s)); this.input = editor(this.client.draft.text); this.following = true; await this.close(true); } }));
@@ -736,8 +857,10 @@ export class Surface {
   async settings() {
     this.open('设置', ['修改通过 Engine 校验并回读；密钥只在隐藏字段输入。'], [
       { label: '返回对话', run: () => this.close(true) },
-      { label: '模型 / Provider / 预算', run: () => this.models() },
-      { label: '工作区与信任', run: () => this.form('选择工作区', [{ key: 'path', label: '已有目录的绝对路径', value: this.client.view.workspace }], async v => this.confirm('确认工作区信任', [v.path, '允许此目录用于后续 Agent 任务；现有会话绑定保持独立。'], '信任并用于新会话', async () => { await this.client.trustWorkspace(v.path); await this.close(true); })) },
+      { label: '模型管理中心 (横向分类 / 快速配置)', run: () => this.modelsHub() },
+      { label: '角色模型分配 (Supervisor / Subagent / Runtime 选项卡)', run: () => this.roleModelAssignmentTabs(0) },
+      { label: '高级模型参数与预算 (原生)', run: () => this.models() },
+      { label: '工作区与信任', run: () => this.workspaceManager() },
       { label: 'Runtime 能力包', run: () => featurePacks(this) },
       { label: 'MCP / 插件', run: () => this.extensions() },
       { label: '记忆 / 调度', run: () => this.open('记忆 / 调度', [], [{ label: '记忆配置', run: () => this.registry('memory') }, { label: '调度配置', run: () => this.registry('cron') }, { label: 'Hooks', run: () => this.registry('hooks') }]) },
@@ -1092,18 +1215,29 @@ export class Surface {
     ], [{ label: '返回对话', run: () => this.close(true) }]);
   }
   commands(): Action[] { return [
-    { label: '发送', run: () => this.submit() }, { command: 'multiline', tier: 'daily', description: '切换单行与多行输入', label: '切换多行', navigation: true, run: () => { this.multiline = !this.multiline; this.page = null; } },
-    { command: 'setup', tier: 'daily', description: '首次配置本机身份、模型与工作区', label: '快速配置 / Setup', navigation: true, run: () => this.setup() },
-    { command: 'resume', tier: 'daily', description: '选择并恢复历史会话', label: '恢复会话 /resume', navigation: true, run: () => this.sessions() }, { command: 'sessions', tier: 'daily', description: '搜索并恢复已有会话', label: '会话列表', navigation: true, run: () => this.sessions() }, { command: 'new', tier: 'daily', description: '保留当前草稿，进入新会话', label: '新建会话', run: () => this.newSession() },
-    { command: 'task', tier: 'context', description: '查看当前任务与运行状态', label: '任务详情', navigation: true, run: () => this.details() }, { command: 'inbox', tier: 'daily', description: '查看审批与待回答问题', label: '待处理', navigation: true, run: () => this.inbox() },
-    { command: 'attach', tier: 'context', description: '管理附件和生成产物', label: '附件 / 产物', navigation: true, run: () => this.attachments() }, { command: 'settings', tier: 'daily', description: '模型、工作区与预算配置', label: '设置', navigation: true, run: () => this.settings() },
-    { command: 'connect', tier: 'context', description: '管理 Phone 与 Peer 连接', label: '连接', navigation: true, run: () => this.connections() }, { command: 'stop', tier: 'context', description: '查看目标，再确认停止', label: '停止当前任务', disabled: !this.client.active, run: () => this.stopRun() },
-    { command: 'retry', tier: 'context', description: '核对 Engine 能力并确认重试', label: '重试当前任务', run: () => this.retryRun() },
-    { command: 'editor', tier: 'advanced', description: '使用 VISUAL / EDITOR 编辑草稿', label: '外部编辑器 /editor', run: () => this.externalEditor() },
-    { command: 'approval', tier: 'advanced', description: '显式选择后续消息审批模式', label: '本次会话审批模式', run: () => this.open('审批模式', ['默认沿用 Engine / 会话现有设置。显式选择仅作用于后续发送。', `当前选择：${this.client.approvalMode || '沿用 Engine'}`], [
+    { label: '发送', run: () => this.submit() },
+    { command: 'model', tier: 'daily', description: '模型管理中心、向导式注册与角色选项卡分配', label: '模型管理 /model', navigation: true, run: () => this.modelsHub() },
+    { command: 'resume', tier: 'daily', description: '选择并恢复历史会话', label: '恢复会话 /resume', navigation: true, run: () => this.sessions() },
+    { command: 'new', tier: 'daily', description: '保留当前草稿，进入新会话', label: '新建会话 /new', run: () => this.newSession() },
+    { command: 'clear', tier: 'daily', description: '清空当前上下文，进入全新会话', label: '清空会话 /clear', run: () => this.newSession() },
+    { command: 'workspace', tier: 'daily', description: '选择并信任项目工作区', label: '工作区管理 /workspace', navigation: true, run: () => this.workspaceManager() },
+    { command: 'mcp', tier: 'daily', description: '管理 MCP 扩展服务与工具', label: 'MCP 扩展 /mcp', navigation: true, run: () => this.extensions() },
+    { command: 'doctor', tier: 'daily', description: '检查环境与服务健康状态', label: '系统诊断 /doctor', navigation: true, run: () => this.readPage('系统诊断', '/v1/client-identity/instance') },
+    { command: 'settings', tier: 'daily', description: '模型、工作区与预算配置', label: '设置 /settings', navigation: true, run: () => this.settings() },
+    { command: 'approval', tier: 'daily', description: '显式选择后续消息审批模式', label: '审批模式 /approval', run: () => this.open('审批模式', ['默认沿用 Engine / 会话现有设置。显式选择仅作用于后续发送。', `当前选择：${this.client.approvalMode || '沿用 Engine'}`], [
       { label: '返回', run: () => this.close(true) },
       ...([['', '沿用 Engine'], ['manual', '逐项审批'], ['reduced', '减少审批'], ['minimal', '免审（保留系统内核与凭据边界）']] as const).map(([mode, label]) => ({ label, run: () => { this.client.approvalMode = mode; this.client.notice = `后续消息审批模式：${label}`; this.page = null; } })),
     ]) },
+    { command: 'setup', tier: 'daily', description: '首次配置本机身份、模型与工作区', label: '快速配置 /setup', navigation: true, run: () => this.setup() },
+    { command: 'sessions', tier: 'daily', description: '搜索并恢复已有会话', label: '会话列表 /sessions', navigation: true, run: () => this.sessions() },
+    { command: 'task', tier: 'context', description: '查看当前任务与运行状态', label: '任务详情', navigation: true, run: () => this.details() },
+    { command: 'inbox', tier: 'daily', description: '查看审批与待回答问题', label: '待处理 /inbox', navigation: true, run: () => this.inbox() },
+    { command: 'attach', tier: 'context', description: '管理附件和生成产物', label: '附件 / 产物', navigation: true, run: () => this.attachments() },
+    { command: 'connect', tier: 'context', description: '管理 Phone 与 Peer 连接', label: '连接', navigation: true, run: () => this.connections() },
+    { command: 'stop', tier: 'context', description: '查看目标，再确认停止', label: '停止当前任务', disabled: !this.client.active, run: () => this.stopRun() },
+    { command: 'retry', tier: 'context', description: '核对 Engine 能力并确认重试', label: '重试当前任务', run: () => this.retryRun() },
+    { command: 'editor', tier: 'advanced', description: '使用 VISUAL / EDITOR 编辑草稿', label: '外部编辑器 /editor', run: () => this.externalEditor() },
+    { command: 'multiline', tier: 'daily', description: '切换单行与多行输入', label: '切换多行', navigation: true, run: () => { this.multiline = !this.multiline; this.page = null; } },
     { command: 'reconcile', tier: 'advanced', description: '只回读，避免重复发送', label: '核对发送结果', run: async () => { await this.client.tick(); this.input = editor(this.client.draft.text); this.client.notice = this.client.draft.unknown ? 'Engine 尚未证明受理；仍禁止自动重发，可查看会话或保留草稿等待恢复。' : '已回读会话状态。'; await this.close(true); } },
     { command: 'history', tier: 'view', description: '读取更早的会话消息', label: '加载更早历史', run: async () => { await this.client.older(); this.following = false; this.anchor = 0; await this.close(true); } },
     { command: 'bottom', tier: 'view', description: '恢复跟随最新输出', label: '回到底部', navigation: true, run: () => { this.following = true; this.unread = 0; this.page = null; } },
@@ -1157,6 +1291,20 @@ export class Surface {
         this.paletteEditor = edit(this.paletteEditor, action, key === 'text' || key === 'paste' ? text : '', this.editorWidth);
         this.paletteQuery = this.paletteEditor.text;
         this.palette(this.paletteQuery, true);
+        return;
+      }
+      if (key === 'left' && page.tabs && page.onTabChange) {
+        const next = ((page.activeTab ?? 0) - 1 + page.tabs.length) % page.tabs.length;
+        page.activeTab = next;
+        await page.onTabChange(next);
+        this.changed();
+        return;
+      }
+      if (key === 'right' && page.tabs && page.onTabChange) {
+        const next = ((page.activeTab ?? 0) + 1) % page.tabs.length;
+        page.activeTab = next;
+        await page.onTabChange(next);
+        this.changed();
         return;
       }
       if (key === 'up' || key === 'backtab') page.selected = Math.max(0, page.selected - 1);

@@ -91,7 +91,14 @@ while IFS= read -r -d '' candidate; do
 
   [[ "$candidate" != *'/mac_ax_helper' ]] || ax_helper_seen=true
   [[ "$candidate" != *'/v8-sandbox-host' ]] || sandbox_host_seen=true
-done < <(find "$app_path" -type f -print0)
+done < <(find "$app_path" -type f \
+  ! -name "*.py" ! -name "*.pyc" ! -name "*.pyi" ! -name "*.pyo" \
+  ! -name "*.js" ! -name "*.mjs" ! -name "*.cjs" ! -name "*.ts" ! -name "*.tsx" ! -name "*.jsx" ! -name "*.json" ! -name "*.map" \
+  ! -name "*.txt" ! -name "*.md" ! -name "*.html" ! -name "*.htm" ! -name "*.css" ! -name "*.scss" ! -name "*.xml" ! -name "*.yaml" ! -name "*.yml" \
+  ! -name "*.png" ! -name "*.jpg" ! -name "*.jpeg" ! -name "*.gif" ! -name "*.webp" ! -name "*.svg" ! -name "*.ico" ! -name "*.icns" \
+  ! -name "*.woff" ! -name "*.woff2" ! -name "*.ttf" ! -name "*.eot" ! -name "*.otf" \
+  ! -name "*.h" ! -name "*.c" ! -name "*.cpp" ! -name "*.whl" ! -name "*.plist" \
+  -print0)
 
 test "$macho_count" -gt 10
 test "$ax_helper_seen" = true

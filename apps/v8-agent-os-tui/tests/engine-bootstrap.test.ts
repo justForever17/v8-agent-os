@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import http from 'node:http';
 import { create, Header } from 'tar';
-import { installEngine, installedRuntime, releaseVersion, extractEngineArchive, validateManifest, targetForPlatform, rememberedDesktopRuntime, runtimeProfileForManifest, validateRuntimeIdentity, acquireDesktopLease, promoteStagedRuntime } from '../bin/engine-bootstrap.mjs';
+import { installEngine, installedRuntime, releaseVersion, extractEngineArchive, validateManifest, targetForPlatform, rememberedDesktopRuntime, runtimeProfileForManifest, validateRuntimeIdentity, acquireDesktopLease, promoteStagedRuntime, discoverHostPython, discoverHostBrowser } from '../bin/engine-bootstrap.mjs';
 
 const VERSION = '2026.09.22.1', TARGET = 'linux-x64', COMMIT = 'a'.repeat(40);
 const ROOT = `v8os-engine-${VERSION}-${TARGET}`;
@@ -268,3 +268,25 @@ test('promoteStagedRuntime atomically promotes staged Engine during installedRun
   assert.equal(fs.existsSync(f.destination), true);
   assert.equal(fs.existsSync(staged), false);
 });
+
+test('discoverHostPython detects compatible host python or returns null safely', () => {
+  const result = discoverHostPython();
+  if (result) {
+    assert.ok(typeof result.command === 'string' && result.command.length > 0);
+    assert.ok(Array.isArray(result.args));
+    assert.match(result.version, /^3\.(1[0-3]|\d+)\./);
+  } else {
+    assert.equal(result, null);
+  }
+});
+
+test('discoverHostBrowser detects system Edge or Chrome when present', () => {
+  const result = discoverHostBrowser();
+  if (result) {
+    assert.ok(['edge', 'chrome', 'chromium', 'google-chrome', 'chromium-browser', 'microsoft-edge'].includes(result.kind));
+    assert.ok(fs.existsSync(result.path));
+  } else {
+    assert.equal(result, null);
+  }
+});
+

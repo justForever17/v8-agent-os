@@ -30,6 +30,7 @@ from core.agent_browser_profile import (
     agent_browser_profile_summary,
     configured_agent_browser_profile_dir,
     debug_port_owned_by_profile,
+    discover_system_agent_browser,
 )
 from core.source_provider_registry import get_source_provider_capabilities, get_source_router_defaults
 from core.tools.bocha_provider import bocha_search
@@ -2709,6 +2710,21 @@ def _fetch_with_scrapling(url: str, *, mode: WebFetchMode = "auto", headless: bo
     )
 
 
+def _resolve_dynamic_fetcher_browser_executable() -> str | None:
+    bundled_env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if bundled_env and Path(bundled_env).is_dir():
+        for pattern in ("chrome*", "chromium*"):
+            if any(Path(bundled_env).rglob(pattern)):
+                return None
+    try:
+        discovered = discover_system_agent_browser()
+        if discovered.get("available") and discovered.get("executable"):
+            return str(discovered["executable"])
+    except Exception:
+        pass
+    return None
+
+
 def _build_fetch_options(
     *,
     headless: bool,
@@ -2738,6 +2754,9 @@ def _build_fetch_options(
         "headless": headless,
         "timeout": max(1000, int(timeout_seconds * 1000)),
     }
+    system_browser_executable = _resolve_dynamic_fetcher_browser_executable()
+    if system_browser_executable:
+        browser["executable_path"] = system_browser_executable
     static = {
         **shared,
         "headers": static_headers or None,

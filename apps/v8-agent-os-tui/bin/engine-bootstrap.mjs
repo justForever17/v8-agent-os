@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -125,6 +126,63 @@ function pythonPathForTarget(target) {
   return target.startsWith('windows-')
     ? `${ENGINE_DIR}/.python/python.exe`
     : `${ENGINE_DIR}/.python/bin/python3`;
+}
+
+export function discoverHostPython() {
+  const candidates = process.platform === 'win32'
+    ? [['python'], ['py', '-3.11'], ['py', '-3'], ['python3']]
+    : [['python3.11'], ['python3'], ['python']];
+  for (const [cmd, ...args] of candidates) {
+    try {
+      const probeScript = 'import sys; v = sys.version_info; print(f"{v[0]}.{v[1]}.{v[2]}"); sys.exit(0 if (3, 10) <= v[:2] <= (3, 13) else 1)';
+      const output = execFileSync(cmd, [...args, '-c', probeScript], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 4000,
+      }).trim();
+      if (output) {
+        return { command: cmd, args, version: output };
+      }
+    } catch {
+      // not found or incompatible
+    }
+  }
+  return null;
+}
+
+export function discoverHostBrowser() {
+  if (process.platform === 'win32') {
+    const pf = process.env.PROGRAMFILES || 'C:\\Program Files';
+    const pf86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
+    const local = process.env.LOCALAPPDATA || '';
+    const candidates = [
+      { kind: 'edge', path: path.join(pf86, 'Microsoft', 'Edge', 'Application', 'msedge.exe') },
+      { kind: 'edge', path: path.join(pf, 'Microsoft', 'Edge', 'Application', 'msedge.exe') },
+      ...(local ? [{ kind: 'edge', path: path.join(local, 'Microsoft', 'Edge', 'Application', 'msedge.exe') }] : []),
+      { kind: 'chrome', path: path.join(pf, 'Google', 'Chrome', 'Application', 'chrome.exe') },
+      { kind: 'chrome', path: path.join(pf86, 'Google', 'Chrome', 'Application', 'chrome.exe') },
+      ...(local ? [{ kind: 'chrome', path: path.join(local, 'Google', 'Chrome', 'Application', 'chrome.exe') }] : []),
+    ];
+    for (const { kind, path: candidatePath } of candidates) {
+      if (fs.existsSync(candidatePath)) return { kind, path: candidatePath };
+    }
+  } else if (process.platform === 'darwin') {
+    const candidates = [
+      { kind: 'chrome', path: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' },
+      { kind: 'edge', path: '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge' },
+    ];
+    for (const { kind, path: candidatePath } of candidates) {
+      if (fs.existsSync(candidatePath)) return { kind, path: candidatePath };
+    }
+  } else {
+    for (const bin of ['google-chrome', 'chromium-browser', 'chromium', 'microsoft-edge']) {
+      try {
+        const out = execFileSync('which', [bin], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        if (out && fs.existsSync(out)) return { kind: bin, path: out };
+      } catch {}
+    }
+  }
+  return null;
 }
 
 export function runtimeProfileForManifest(manifest) {
@@ -408,7 +466,12 @@ export async function startEngine({ install = true, lifecycle = 'daemon', signal
     try { core.initializeServerCredentials(); }
     catch (error) { if (!fs.existsSync(process.env.V8_AGENT_OS_CREDENTIAL_KEY_FILE)) throw error; }
   }
-  progress('Starting Engine / 正在启动引擎');
+  const hostBrowser = discoverHostBrowser();
+  if (hostBrowser) {
+    progress(`Starting Engine (System Browser: ${hostBrowser.kind}) / 正在启动引擎（系统浏览器：${hostBrowser.kind}）`);
+  } else {
+    progress('Starting Engine / 正在启动引擎');
+  }
   signal.throwIfAborted();
   const { results } = await core.startCoreComponentsWithRuntimePorts(['engine'], { mode: 'start', lifecycle });
   const result = results.find(item => item.id === 'engine');
@@ -452,10 +515,12 @@ export async function statusEngine() {
     catch (error) { if (process.platform === 'linux' || process.env.V8OS_ENGINE_RUNTIME_DIR) throw error; }
   }
   if (!root) root = rememberedDesktopRuntime();
-  if (!root) return { status: 'not_installed', platform: `${process.platform}-${process.arch}`, runtimeRoot: null };
+  const hostPython = discoverHostPython();
+  const hostBrowser = discoverHostBrowser();
+  if (!root) return { status: 'not_installed', platform: `${process.platform}-${process.arch}`, runtimeRoot: null, hostPython, hostBrowser };
   const core = await localControl(root);
   const result = (await core.statusCoreComponents(['engine']))[0];
-  return { ...result, status: result?.managed && result?.pidAlive ? 'running' : result?.pidAlive ? 'identity_unverified' : 'stopped', runtimeRoot: root, baseUrl: core.engineTargetOrigin() };
+  return { ...result, status: result?.managed && result?.pidAlive ? 'running' : result?.pidAlive ? 'identity_unverified' : 'stopped', runtimeRoot: root, baseUrl: core.engineTargetOrigin(), hostPython, hostBrowser };
 }
 
 export async function stopEngine({ expectedIdentity } = {}) {

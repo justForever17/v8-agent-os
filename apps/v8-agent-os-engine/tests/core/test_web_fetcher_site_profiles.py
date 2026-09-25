@@ -1753,3 +1753,19 @@ def test_reader_fallback_honors_research_text_depth_without_expanding_default_su
     assert "...[TRUNCATED]" in default_payload["text"]
     assert late_marker in research_payload["text"]
     assert "path_type=pathlib.Path" in research_payload["text"]
+
+
+def test_build_fetch_options_uses_system_browser_when_bundled_is_absent(monkeypatch):
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    monkeypatch.setattr(
+        "core.tools.web_fetcher.discover_system_agent_browser",
+        lambda: {"available": True, "browserKind": "edge", "executable": "/mock/msedge.exe"},
+    )
+    _static, browser = web_fetcher._build_fetch_options(
+        headless=True,
+        referer_mode="none",
+        referer_url="",
+        timeout_seconds=5.0,
+    )
+    assert browser.get("executable_path") == "/mock/msedge.exe"
+

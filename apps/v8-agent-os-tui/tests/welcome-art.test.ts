@@ -3,21 +3,21 @@ import assert from 'node:assert/strict';
 import stringWidth from 'string-width';
 import { welcomeArt, welcomeArtCandidates, welcomeArtProjection, welcomeArtWidth } from '../src/welcome-art.js';
 
-test('welcome candidates are ASCII, token-safe, and in the intended terminal width', () => {
+test('welcome candidates are clean glyphs, token-safe, and in the intended terminal width', () => {
   for (const candidate of Object.values(welcomeArtCandidates)) {
     assert.ok(candidate.length >= 6);
     for (const line of candidate) {
-      assert.equal(/[^\x20-\x7e]/.test(line), false);
-      assert.equal(stringWidth(line), line.length);
-      assert.ok(line.length >= 50 && line.length <= 70);
+      assert.equal(/[\x00-\x1f\x7f]/.test(line), false);
+      const width = stringWidth(line);
+      assert.ok(width >= 50 && width <= 75);
     }
   }
-  assert.equal(welcomeArtWidth('prism'), 63);
-  assert.equal(welcomeArtWidth('ribbon'), 62);
+  assert.equal(welcomeArtWidth('prism'), 71);
+  assert.equal(welcomeArtWidth('ribbon'), 64);
 });
 
 test('24/40 columns use one ASCII row and 80 columns use the full prism', () => {
-  for (const width of [1, 8, 23, 24, 40, 50, 62]) {
+  for (const width of [1, 8, 23, 24, 40, 50, 62, 70]) {
     const projection = welcomeArtProjection(width);
     assert.equal(projection.rows.length, 1);
     assert.ok(projection.lines.every(line => stringWidth(line) <= width));

@@ -14,7 +14,7 @@ import { composerCursorPosition } from './composer-layout.js';
 import { welcomeTextRow, type WelcomeArtRow } from './welcome-art.js';
 export { messageText } from './presentation.js';
 
-const Pad = ({ lines, height, width, selected = -1, titled = false, locale = 'zh-CN', localizeLines = false, tokens, theme }: { lines: string[]; height: number; width: number; selected?: number; titled?: boolean; locale?: 'zh-CN' | 'en-US'; localizeLines?: boolean; tokens?: Array<keyof ThemeTokens | undefined>; theme?: ThemeTokens }) => <Box width={width} height={height} flexDirection="column" overflow="hidden">{Array.from({ length: height }, (_, i) => { const token = tokens?.[i]; const value = theme && theme.ansi && token ? theme[token] : undefined; const color = typeof value === 'string' ? value : undefined; return <Text key={i} color={color} bold={i === selected || titled && i === 0} inverse={i === selected} wrap="truncate-end">{clip(localizeLines ? localize(lines[i] || ' ', locale) : (lines[i] || ' '), width)}</Text>; })}</Box>;
+const Pad = ({ lines, height, width, selected = -1, titled = false, locale = 'zh-CN', localizeLines = false, tokens, theme }: { lines: string[]; height: number; width: number; selected?: number; titled?: boolean; locale?: 'zh-CN' | 'en-US'; localizeLines?: boolean; tokens?: Array<keyof ThemeTokens | undefined>; theme?: ThemeTokens }) => <Box width={width} height={height} flexDirection="column" overflow="hidden">{Array.from({ length: height }, (_, i) => { const token = tokens?.[i]; const value = theme && theme.ansi && token ? theme[token] : undefined; const color = typeof value === 'string' ? value : undefined; return <Text key={i} color={color} bold={i === selected || titled && i === 0} inverse={i === selected} wrap="truncate-end">{clip(localizeLines ? localize(lines[i] || ' ', locale) : (lines[i] || ' '), Math.max(1, width - 1))}</Text>; })}</Box>;
 
 const WelcomePad = ({ rows, height, width, theme }: { rows: readonly WelcomeArtRow[]; height: number; width: number; theme: ThemeTokens }) => <Box width={width} height={height} flexDirection="column" overflow="hidden">{Array.from({ length: height }, (_, i) => {
   const row = rows[i] || welcomeTextRow('');
@@ -48,8 +48,10 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   surface.editorWidth = Math.max(1, columns - 2);
   const inputLayout = editorLayout(editing, surface.editorWidth, secret);
   const inputLines = inputLayout.lines;
+  const safeColumns = Math.max(1, columns - 1);
+  const pendingHeight = client.pendingApproval && !surface.page ? 1 : 0;
   const inputHeight = !showComposer ? 0 : size.small ? 1 : Math.max(1, Math.min(8, Math.floor(rows / 3), inputLines.length));
-  const availableHistoryHeight = Math.max(1, rows - inputHeight - (showComposer ? 6 : 4));
+  const availableHistoryHeight = Math.max(1, rows - inputHeight - (showComposer ? 6 : 4) - pendingHeight);
   const suggestions = menu ? suggestionRows(surface.commands(), menu.query.text, menu.selected, columns, Math.max(0, availableHistoryHeight - 2), { active: client.active, hasAttachments: client.draft.attachments.length > 0, configured: client.ownerReady && Boolean(client.workspace) }) : { lines: [], selectedRow: -1 };
   const mentionRows = mentionMenu ? surface.mentionRows(columns, Math.max(0, availableHistoryHeight - 2)) : { lines: [], selectedRow: -1 };
   const overlay = mentionMenu ? mentionRows : suggestions;
@@ -100,19 +102,19 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
     ? (columns < 60 ? 'Y 批准 · N 拒绝 · A 放行 · D 详情' : '【安全审批拦截】Y 批准本次 · N 拒绝 · A 本会话允许 · D 详情')
     : mentionMenu ? (columns < 60 ? '←→分组 ↑↓选择 Tab补全 Enter确认 Esc取消' : '←→切换分组 · ↑↓选择 · Tab补全 · Enter确认 · Esc取消并恢复草稿') : menu ? (columns < 40 ? '↑↓选 Tab补 ↵执行 Esc返' : columns < 60 ? '↑↓选择 Tab补全 Enter执行 Esc返回' : '↑↓ 选择 · Tab 补全 · Enter 执行 · Esc 返回草稿 · Ctrl+P 完整菜单') : page?.fields ? 'Tab 切换字段 · F9 保存/预览 · Esc 返回' : page ? '↑↓/Tab 选择 · Enter 执行 · PgUp/PgDn 阅读 · Esc 返回' : 'Enter 发送 · F8 多行 · Ctrl+P 操作 · F1 帮助 · Ctrl+D 退出';
   return <Box flexDirection="column" width={columns} height={rows}>
-    <Text bold>{clip(localize(label, locale), columns)}</Text><Text dimColor>{'─'.repeat(columns)}</Text>
+    <Text bold>{clip(localize(label, locale), safeColumns)}</Text><Text dimColor>{'─'.repeat(safeColumns)}</Text>
     <Box height={historyHeight}>
       {!page && size.sidebar > 0 && <Box width={size.sidebar} borderStyle="single" borderTop={false} borderLeft={false} borderBottom={false}><Pad titled width={size.sidebar - 1} height={historyHeight} lines={['会话概览 · Ctrl+B选择', ...client.sessions.map(s => `${s.id === client.view.sessionId ? '●' : ' '} ${s.title || '未命名'} · ${localize(statusLabel(s.status), locale)}`)]} locale={locale} localizeLines={true} theme={theme} /></Box>}
       {!page && welcomeRows ? <WelcomePad width={size.chat} height={historyHeight} rows={welcomeRows} theme={theme} /> : <Pad width={page ? columns : size.chat} height={historyHeight} lines={body} tokens={bodyTokens} selected={selectedRow} titled={Boolean(page)} locale={locale} localizeLines={Boolean(page) && page?.localizeLines !== false} theme={theme} />}
       {!page && size.detail > 0 && <Box width={size.detail} borderStyle="single" borderTop={false} borderRight={false} borderBottom={false}><Pad titled width={size.detail - 1} height={historyHeight} lines={['任务概览 · Ctrl+T详情', `状态：${localize(statusLabel(client.run.status || client.snapshot.runtimeStatus) || '未运行', locale)}`, ...client.outputs.flatMap(x => [x.name, x.path || ''])]} theme={theme} /></Box>}
     </Box>
-    {client.pendingApproval && !surface.page && <Text color="magenta" bold>{clip(localize(`[🛡️ 待审批: ${client.pendingApproval.tool || client.pendingApproval.name || client.pendingApproval.title || '操作'}] 按 Y 批准 · 按 N 拒绝 · 按 A 放行 · 按 D 详情`, locale), columns)}</Text>}
-    <Text color={/失败|未知|未确认|未连接|中断|错误/.test(client.notice) ? 'yellow' : undefined} dimColor={!client.notice}>{clip(localize(surface.following ? client.notice : `已暂停跟随${surface.unread ? ` · ${surface.unread} 条有更新` : ''} · 菜单“回到底部”恢复`, locale), columns)}</Text>
-    {showComposer && <Text>{clip(localize(page?.fields ? `编辑：${field!.label}` : operationMenu ? '操作菜单 · 输入筛选' : `${statusLabel(client.run.status) || '对话'}${surface.multiline ? ' · 多行（F9发送）' : ''}${client.draft.attachments.length ? ` · 附件 ${client.draft.attachments.length}` : ''}${client.draft.unknown ? ' · 发送结果待确认' : ''}${surface.busy || client.busy ? ' · 正在处理' : ''}`, locale), columns)}</Text>}
-    {showComposer && <Text dimColor>{'─'.repeat(columns)}</Text>}
+    {client.pendingApproval && !surface.page && <Text color="magenta" bold>{clip(localize(`[🛡️ 待审批: ${client.pendingApproval.tool || client.pendingApproval.name || client.pendingApproval.title || '操作'}] 按 Y 批准 · 按 N 拒绝 · 按 A 放行 · 按 D 详情`, locale), safeColumns)}</Text>}
+    <Text color={/失败|未知|未确认|未连接|中断|错误/.test(client.notice) ? 'yellow' : undefined} dimColor={!client.notice}>{clip(localize(surface.following ? client.notice : `已暂停跟随${surface.unread ? ` · ${surface.unread} 条有更新` : ''} · 菜单“回到底部”恢复`, locale), safeColumns)}</Text>
+    {showComposer && <Text>{clip(localize(page?.fields ? `编辑：${field!.label}` : operationMenu ? '操作菜单 · 输入筛选' : `${statusLabel(client.run.status) || '对话'}${surface.multiline ? ' · 多行（F9发送）' : ''}${client.draft.attachments.length ? ` · 附件 ${client.draft.attachments.length}` : ''}${client.draft.unknown ? ' · 发送结果待确认' : ''}${surface.busy || client.busy ? ' · 正在处理' : ''}`, locale), safeColumns)}</Text>}
+    {showComposer && <Text dimColor>{'─'.repeat(safeColumns)}</Text>}
     {overlay.lines.length > 0 && <Pad width={columns} height={overlay.lines.length} lines={overlay.lines} selected={overlay.selectedRow} locale={locale} localizeLines={true} />}
     <Pad width={columns} height={inputHeight} lines={inputLines.slice(inputOffset, inputOffset + inputHeight).map((l, i) => `${i === 0 ? '> ' : '  '}${l}`)} />
-    <Text dimColor>{clip(localize(hint, locale), columns)}</Text>
+    <Text dimColor>{clip(localize(hint, locale), safeColumns)}</Text>
   </Box>;
 }
 
@@ -194,7 +196,8 @@ export async function start(args: string[]) {
     clearTimeout(timer); clearTimeout(pasteTimer);
     process.stdin.off('data', onData); process.stdin.off('end', cleanup);
     process.off('SIGTERM', cleanup); process.off('SIGINT', interrupt); process.off('SIGHUP', cleanup);
-    if (process.platform !== 'win32') { process.off('SIGTSTP', suspend); process.off('SIGCONT', resume); }
+    if (process.platform === 'win32') process.off('SIGBREAK', cleanup);
+    else { process.off('SIGTSTP', suspend); process.off('SIGCONT', resume); }
     app?.unmount(); process.stdin.setRawMode(false); process.stdin.pause();
     editingAbort?.abort();
     process.stdout.write('\x1b[?2004l\x1b[?25h');
@@ -225,7 +228,8 @@ export async function start(args: string[]) {
   process.stdin.setRawMode(true); process.stdin.resume(); process.stdin.on('data', onData); process.stdin.on('end', cleanup);
   process.stdout.write('\x1b[?2004h');
   process.on('SIGTERM', cleanup); process.on('SIGINT', interrupt); process.on('SIGHUP', cleanup);
-  if (process.platform !== 'win32') { process.on('SIGTSTP', suspend); process.on('SIGCONT', resume); }
+  if (process.platform === 'win32') process.on('SIGBREAK', cleanup);
+  else { process.on('SIGTSTP', suspend); process.on('SIGCONT', resume); }
   let lastMessages = new Map<string, string>();
   let readerSession = '';
   const unsubscribe = reader ? client.subscribe(() => {
@@ -241,6 +245,7 @@ export async function start(args: string[]) {
     await client.initialize();
     if (requestedLocale && client.view.locale !== requestedLocale) { client.view.locale = requestedLocale; client.save(true); client.changed(); }
     if (requestedSession && client.instance.instanceId) await client.attach(requestedSession);
+    else if (client.instance.instanceId) await client.attach('');
     echo();
     void client.runLoop();
     await exited;

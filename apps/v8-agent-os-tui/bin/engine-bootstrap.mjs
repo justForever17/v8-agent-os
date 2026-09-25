@@ -554,3 +554,65 @@ export async function runEngineCli(args, options = {}) {
   await main(cliArgs);
   return process.exitCode || 0;
 }
+
+export async function ensureWorkspaceConsent({ root, cwd = process.cwd(), signal, english = false } = {}) {
+  const resolved = path.resolve(cwd);
+  let projects = [];
+  try {
+    const core = await localControl(root);
+    const data = await core.engineJson('/v1/projects', { signal, timeoutMs: 5000 });
+    projects = Array.isArray(data?.projects) ? data.projects : Array.isArray(data) ? data : [];
+  } catch {
+    return { ok: true, registered: false, workspace: resolved };
+  }
+  const isRegistered = projects.some(p => {
+    const pPath = p?.workspacePath || p?.workspace_path;
+    return pPath && path.resolve(pPath) === resolved && p.workspaceTrustState !== 'rejected';
+  });
+  if (isRegistered) {
+    return { ok: true, registered: true, workspace: resolved };
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return { ok: true, registered: false, workspace: resolved };
+  }
+  const promptZh = `\n当前目录尚未设为 V8OS 工作区：\n  ${resolved}\n是否将此路径设为工作区？ (Y/n) `;
+  const promptEn = `\nCurrent directory is not registered as a V8OS workspace:\n  ${resolved}\nSet this directory as workspace? (Y/n) `;
+  const readline = await import('node:readline/promises');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  let answer = '';
+  try {
+    answer = (await rl.question(english ? promptEn : promptZh)).trim().toLowerCase();
+  } catch {
+    answer = 'n';
+  } finally {
+    rl.close();
+  }
+  if (answer === '' || answer === 'y' || answer === 'yes') {
+    try {
+      const core = await localControl(root);
+      await core.engineJson('/v1/projects', {
+        method: 'POST',
+        body: {
+          name: path.basename(resolved) || resolved,
+          workspacePath: resolved,
+          workspaceTrustState: 'trusted',
+          workspaceTrustSource: 'tui_user_confirmed',
+        },
+        signal,
+        timeoutMs: 10000,
+      });
+      const noteZh = `已将当前目录设为工作区：${resolved}\n`;
+      const noteEn = `Current directory registered as trusted workspace: ${resolved}\n`;
+      process.stdout.write(english ? noteEn : noteZh);
+      return { ok: true, registered: true, workspace: resolved };
+    } catch (e) {
+      process.stderr.write(`注册工作区失败: ${e.message}\n`);
+      return { ok: true, registered: false, workspace: resolved };
+    }
+  } else {
+    const exitZh = `已取消设置工作区，退出。\n`;
+    const exitEn = `Cancelled. Exiting.\n`;
+    process.stdout.write(english ? exitEn : exitZh);
+    return { ok: false, reason: 'user_declined', workspace: resolved };
+  }
+}

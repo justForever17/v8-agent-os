@@ -13,38 +13,52 @@ export type WelcomeArtProjection = {
 type RowSpec = { text: string; highlights?: Array<{ start: number; end: number; token: WelcomeToken }> };
 
 const prism: readonly RowSpec[] = [
-  { text: '      +====================================================+', highlights: [{ start: 0, end: 60, token: 'border' }] },
-  { text: '     /|               V8  AGENT OS                        /|', highlights: [
-    { start: 0, end: 22, token: 'muted' }, { start: 22, end: 24, token: 'selected' }, { start: 24, end: 26, token: 'muted' },
-    { start: 26, end: 34, token: 'code' }, { start: 34, end: 60, token: 'muted' },
+  { text: ' ╔════════════════════════════════════════════════════════════════════╗', highlights: [{ start: 0, end: 71, token: 'border' }] },
+  { text: ' ║  ██╗   ██╗ ▄████▄    █████╗  ██████╗ ███████╗███╗   ██╗████████╗   ║', highlights: [
+    { start: 0, end: 4, token: 'border' }, { start: 4, end: 25, token: 'selected' }, { start: 25, end: 29, token: 'muted' },
+    { start: 29, end: 67, token: 'code' }, { start: 67, end: 71, token: 'border' },
   ] },
-  { text: '    / |   +--------------------------------------------+   / |', highlights: [
-    { start: 0, end: 10, token: 'muted' }, { start: 10, end: 56, token: 'success' }, { start: 56, end: 62, token: 'muted' },
+  { text: ' ║  ██║   ██║██╔═══██╗ ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝   ║', highlights: [
+    { start: 0, end: 4, token: 'border' }, { start: 4, end: 25, token: 'selected' }, { start: 25, end: 29, token: 'muted' },
+    { start: 29, end: 67, token: 'code' }, { start: 67, end: 71, token: 'border' },
   ] },
-  { text: '   +--+   |     LOCAL ENGINE / SUPERVISOR             |  +--+', highlights: [
-    { start: 0, end: 10, token: 'muted' }, { start: 10, end: 16, token: 'success' }, { start: 16, end: 49, token: 'text' }, { start: 49, end: 55, token: 'success' }, { start: 55, end: 61, token: 'muted' },
+  { text: ' ║  ██║   ██║╚██████╔╝ ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║      ║', highlights: [
+    { start: 0, end: 4, token: 'border' }, { start: 4, end: 25, token: 'selected' }, { start: 25, end: 29, token: 'muted' },
+    { start: 29, end: 67, token: 'code' }, { start: 67, end: 71, token: 'border' },
   ] },
-  { text: '   |  |   +--------------------------------------------+  |  |', highlights: [
-    { start: 0, end: 10, token: 'muted' }, { start: 10, end: 56, token: 'success' }, { start: 56, end: 62, token: 'muted' },
+  { text: ' ║  ╚██╗ ██╔╝██╔═══██╗ ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║      ║', highlights: [
+    { start: 0, end: 4, token: 'border' }, { start: 4, end: 25, token: 'selected' }, { start: 25, end: 29, token: 'muted' },
+    { start: 29, end: 67, token: 'code' }, { start: 67, end: 71, token: 'border' },
   ] },
-  { text: '   |  +==================================================+  |', highlights: [
-    { start: 0, end: 6, token: 'muted' }, { start: 6, end: 58, token: 'selected' }, { start: 58, end: 61, token: 'muted' },
+  { text: ' ║   ╚████╔╝ ╚██████╔╝ ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║      ║', highlights: [
+    { start: 0, end: 4, token: 'border' }, { start: 4, end: 25, token: 'selected' }, { start: 25, end: 29, token: 'muted' },
+    { start: 29, end: 67, token: 'code' }, { start: 67, end: 71, token: 'border' },
   ] },
-  { text: '   | /       conversation-first terminal control plane      | /', highlights: [
-    { start: 0, end: 13, token: 'muted' }, { start: 13, end: 54, token: 'text' }, { start: 54, end: 63, token: 'muted' },
+  { text: ' ║    ╚═══╝   ╚═════╝  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝      ║', highlights: [
+    { start: 0, end: 4, token: 'border' }, { start: 4, end: 25, token: 'selected' }, { start: 25, end: 29, token: 'muted' },
+    { start: 29, end: 67, token: 'code' }, { start: 67, end: 71, token: 'border' },
   ] },
-  { text: '   |/_______________________________________________________|/', highlights: [{ start: 0, end: 62, token: 'muted' }] },
+  { text: ' ╚══════  A G E N T   O S   ·   L O C A L   E N G I N E  ═════════════╝', highlights: [
+    { start: 0, end: 9, token: 'border' }, { start: 9, end: 26, token: 'success' }, { start: 26, end: 31, token: 'muted' },
+    { start: 31, end: 56, token: 'code' }, { start: 56, end: 71, token: 'border' },
+  ] },
 ];
 const ribbon: readonly RowSpec[] = [
-  { text: '+----------------------------------------------------------+', highlights: [{ start: 0, end: 60, token: 'border' }] },
-  { text: '||  V8  /  AGENT OS  /  LOCAL ENGINE                      ||', highlights: [
-    { start: 0, end: 7, token: 'muted' }, { start: 7, end: 9, token: 'selected' }, { start: 9, end: 14, token: 'muted' },
-    { start: 14, end: 22, token: 'code' }, { start: 22, end: 60, token: 'muted' },
+  { text: ' ╔═════════════════════════════════════════════════════════════╗', highlights: [{ start: 0, end: 64, token: 'border' }] },
+  { text: ' ║  V8 AGENT OS  ·  Autonomous Local Engine Control Plane      ║', highlights: [
+    { start: 0, end: 4, token: 'border' }, { start: 4, end: 15, token: 'selected' }, { start: 15, end: 18, token: 'muted' },
+    { start: 18, end: 59, token: 'text' }, { start: 59, end: 64, token: 'border' },
   ] },
-  { text: '||  +----------------------------------------------+       ||', highlights: [{ start: 0, end: 4, token: 'muted' }, { start: 4, end: 51, token: 'success' }, { start: 51, end: 60, token: 'muted' }] },
-  { text: '||  |  conversation-first terminal control plane    |       ||', highlights: [{ start: 0, end: 7, token: 'muted' }, { start: 7, end: 52, token: 'text' }, { start: 52, end: 62, token: 'muted' }] },
-  { text: '||  +----------------------------------------------+       ||', highlights: [{ start: 0, end: 4, token: 'muted' }, { start: 4, end: 51, token: 'success' }, { start: 51, end: 60, token: 'muted' }] },
-  { text: '+----------------------------------------------------------+', highlights: [{ start: 0, end: 60, token: 'border' }] },
+  { text: ' ║  ─────────────────────────────────────────────────────────  ║', highlights: [
+    { start: 0, end: 4, token: 'border' }, { start: 4, end: 59, token: 'muted' }, { start: 59, end: 64, token: 'border' },
+  ] },
+  { text: ' ║  ██╗   ██╗ ▄████▄    Supervisor · Action Kernel · Swarm     ║', highlights: [
+    { start: 0, end: 4, token: 'border' }, { start: 4, end: 24, token: 'selected' }, { start: 24, end: 58, token: 'code' }, { start: 58, end: 64, token: 'border' },
+  ] },
+  { text: ' ║  ╚████╔╝  ╚██████╔╝  Conversation-first Terminal Surface    ║', highlights: [
+    { start: 0, end: 4, token: 'border' }, { start: 4, end: 24, token: 'selected' }, { start: 24, end: 58, token: 'success' }, { start: 58, end: 64, token: 'border' },
+  ] },
+  { text: ' ╚═════════════════════════════════════════════════════════════╝', highlights: [{ start: 0, end: 64, token: 'border' }] },
 ];
 const specs: Record<'prism' | 'ribbon', readonly RowSpec[]> = { prism, ribbon };
 const compactText = 'V8 AGENT OS';

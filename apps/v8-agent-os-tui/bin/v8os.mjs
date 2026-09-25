@@ -104,7 +104,7 @@ async function main() {
   if (command === 'tui' && (!process.stdin.isTTY || !process.stdout.isTTY || (process.env.TERM === 'dumb' && !args.includes('--screen-reader')))) {
     print({ ok: false, error: 'tty_required', message: t('请在交互终端运行 v8os；脚本请用 v8os chat/sessions/... --json。', 'Use v8os in a TTY; scripts should use v8os chat/sessions/... --json.') }); return 2;
   }
-  const { installEngine, runEngineCli, startEngine, statusEngine, stopEngine } = await import('./engine-bootstrap.mjs');
+  const { ensureWorkspaceConsent, installEngine, runEngineCli, startEngine, statusEngine, stopEngine } = await import('./engine-bootstrap.mjs');
   const options = { install: !args.includes('--no-install'), signal: controller.signal, progress };
   if (command === 'status' || command === 'doctor') {
     const status = await statusEngine();
@@ -123,9 +123,25 @@ async function main() {
     let started;
     let tuiError;
     let releaseError;
+    const safeRelease = async () => {
+      if (!started?.release) return;
+      try {
+        const released = await started.release();
+        if (!['stopped', 'lease_retained', 'not_owned'].includes(released?.status)) {
+          releaseError = new Error(`Engine lifecycle release incomplete: ${released?.status || 'unknown'}`);
+        }
+      } catch (error) {
+        releaseError = error instanceof Error ? error : new Error(String(error));
+      }
+    };
     try {
       started = await startEngine({ ...options, lifecycle: 'desktop' });
       process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort);
+      const consent = await ensureWorkspaceConsent({ root: started.runtimeRoot, signal: controller.signal, english });
+      if (!consent.ok) {
+        await safeRelease();
+        return 0;
+      }
       process.env.NODE_ENV ||= 'production';
       if (args.includes('--no-color') || process.env.NO_COLOR !== undefined) process.env.FORCE_COLOR = '0';
       const tuiArgs = (args[0] === 'tui' ? args.slice(1) : args).filter(arg => arg !== '--no-install');
@@ -135,16 +151,7 @@ async function main() {
       // A TUI-owned Engine process is a short-lived lease.  A daemon/service
       // started by another control-plane owner is retained by expected identity
       // fencing and therefore cannot be stopped by this surface.
-      if (started?.release) {
-        try {
-          const released = await started.release();
-          if (!['stopped', 'lease_retained', 'not_owned'].includes(released?.status)) {
-            releaseError = new Error(`Engine lifecycle release incomplete: ${released?.status || 'unknown'}`);
-          }
-        } catch (error) {
-          releaseError = error instanceof Error ? error : new Error(String(error));
-        }
-      }
+      await safeRelease();
     }
     if (tuiError) {
       if (releaseError) tuiError = new Error(`${tuiError instanceof Error ? tuiError.message : String(tuiError)}; ${releaseError.message}`);

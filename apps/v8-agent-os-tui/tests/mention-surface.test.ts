@@ -26,7 +26,10 @@ test('@ opens a grouped picker, keeps workspace files bounded, and Enter confirm
 
   await surface.dispatch({ key: 'text', text: '@' });
   assert.ok(surface.mentionSuggestions);
-  await new Promise(resolve => setTimeout(resolve, 10));
+  for (let i = 0; i < 50; i++) {
+    if (surface.mentionRows(80, 10).lines.some(l => l.includes('@notes.md'))) break;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
   const rows = surface.mentionRows(80, 10);
   assert.match(rows.lines.join('\n'), /@notes\.md/);
   assert.doesNotMatch(rows.lines.join('\n'), /secret\.js/);

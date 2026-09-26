@@ -337,18 +337,26 @@ export class PhoneTransport {
         const request = (async () => {
             const releasePermit = await this.acquire(signal);
             try {
-                for (const endpoint of candidates) {
+                const probe = async (endpoint: string): Promise<string> => {
                     this.assertCurrent(signal);
-                    try {
-                        const response = await this.requestEndpoint(endpoint, "/api/client/connection", {}, signal, Date.now() + 4_000);
-                        const payload = response.ok ? await parseJsonSafe<{ user?: PhoneUser; linkManifest?: { instanceId?: string } }>(response) : (await response.text(), null);
-                        this.assertCurrent(signal);
-                        if (payload?.user?.id !== this.options.principalId || payload.linkManifest?.instanceId !== this.options.instanceId) continue;
-                        this.endpoint = endpoint; this.options.onEndpoint(endpoint);
-                        return true;
-                    } catch { this.assertCurrent(signal); }
+                    const response = await this.requestEndpoint(endpoint, "/api/client/connection", {}, signal, Date.now() + 3_000);
+                    const payload = response.ok ? await parseJsonSafe<{ user?: PhoneUser; linkManifest?: { instanceId?: string } }>(response) : (await response.text(), null);
+                    this.assertCurrent(signal);
+                    if (payload?.user?.id !== this.options.principalId || payload.linkManifest?.instanceId !== this.options.instanceId) {
+                        throw new Error("unmatched_instance");
+                    }
+                    return endpoint;
+                };
+
+                try {
+                    const winnerEndpoint = await Promise.any(candidates.map(ep => probe(ep)));
+                    this.assertCurrent(signal);
+                    this.endpoint = winnerEndpoint;
+                    this.options.onEndpoint(winnerEndpoint);
+                    return true;
+                } catch {
+                    return false;
                 }
-                return false;
             } finally { releasePermit(); }
         })().catch(() => false).finally(() => {
             scope.release();

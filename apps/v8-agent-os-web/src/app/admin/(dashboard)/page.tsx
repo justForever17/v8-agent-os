@@ -3,7 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@admin/components/ui/card";
 import { Button } from "@admin/components/ui/button";
 import { useMemo } from "react";
-import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts";
+import dynamic from "next/dynamic";
 import { Activity, Loader2, RefreshCw } from "lucide-react";
 import { Badge } from "@admin/components/ui/badge";
 import { useAdminJsonResource } from "@admin/lib/use-admin-json-resource";
@@ -13,8 +13,33 @@ import { RuntimeDashboardCards } from "@admin/components/runtime/RuntimeDashboar
 import { AdminHoverInfo } from "@admin/components/admin-shell/AdminHoverInfo";
 import { useDebugMode } from "@admin/lib/useDebugMode";
 import { ModelCacheUsage, ModelCacheWindowSummary, type ModelCacheUsageData, type ProviderCacheWindow } from "@admin/components/models/ModelCacheUsage";
+const AdminDashboardCharts = dynamic(
+    () => import("@admin/components/dashboard/AdminDashboardCharts").then((m) => m.AdminDashboardCharts),
+    {
+        ssr: false,
+        loading: () => (
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                <Card className="col-span-1 flex h-[420px] min-h-0 flex-col animate-pulse">
+                    <CardHeader>
+                        <div className="h-6 w-32 rounded bg-muted" />
+                    </CardHeader>
+                    <CardContent className="flex-1 min-h-0">
+                        <div className="h-full w-full rounded-lg bg-muted/20 border border-dashed border-border/60" />
+                    </CardContent>
+                </Card>
+                <Card className="col-span-1 flex h-[420px] min-h-0 flex-col animate-pulse">
+                    <CardHeader>
+                        <div className="h-6 w-32 rounded bg-muted" />
+                    </CardHeader>
+                    <CardContent className="flex-1 min-h-0">
+                        <div className="h-full w-full rounded-lg bg-muted/20 border border-dashed border-border/60" />
+                    </CardContent>
+                </Card>
+            </div>
+        ),
+    }
+);
 
-const COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042", "#7C3AED", "#F43F5E", "#14B8A6", "#F97316"];
 const DASHBOARD_WINDOW_DAYS = 7;
 
 type PromptCacheInvocationSummary = {
@@ -307,62 +332,18 @@ export default function DashboardPage() {
             </div>
 
             {/* Charts */}
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                <Card className="col-span-1 flex h-[420px] min-h-0 flex-col">
-                    <CardHeader>
-                        <CardTitle>{t("app.admin.dashboard.page.kad5f5f05")}</CardTitle>
-                    </CardHeader>
-                    <CardContent className="flex-1 min-h-0">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={data.charts.dailyActivity}>
-                                <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-                                <XAxis dataKey="date" />
-                                <YAxis />
-                                <Tooltip
-                                    contentStyle={{ backgroundColor: 'rgba(0,0,0,0.8)', border: 'none', borderRadius: '8px', color: '#fff' }}
-                                />
-                                <Line type="monotone" dataKey="messages" name={t("app.admin.dashboard.page.kc199335d")} stroke="#8884d8" strokeWidth={2} />
-                                <Line type="monotone" dataKey="runs" name={t("app.admin.dashboard.page.k3f539477")} stroke="#82ca9d" strokeWidth={2} />
-                                <Line type="monotone" dataKey="invocations" name={t("app.admin.dashboard.page.k1a3ec470")} stroke="#f59e0b" strokeWidth={2} />
-                            </LineChart>
-                        </ResponsiveContainer>
-                    </CardContent>
-                </Card>
-
-                <Card className="col-span-1 flex h-[420px] min-h-0 flex-col">
-                    <CardHeader>
-                        <CardTitle>{t("app.admin.dashboard.page.kd35fe722")}</CardTitle>
-                    </CardHeader>
-                    <CardContent className="flex min-h-0 flex-1 flex-col">
-                        <div className="min-h-0 flex-1">
-                            {data.charts.modelUsage.length === 0 ? (
-                                <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-border/70 bg-muted/20 px-4 text-sm text-muted-foreground">
-                                    {t("app.admin.dashboard.page.k393204db")}
-                                </div>
-                            ) : (
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <PieChart>
-                                        <Pie
-                                            data={data.charts.modelUsage}
-                                            cx="50%"
-                                            cy="50%"
-                                            innerRadius={60}
-                                            outerRadius={80}
-                                            paddingAngle={5}
-                                            dataKey="value"
-                                        >
-                                            {data.charts.modelUsage.map((entry, index) => (
-                                                <Cell key={`${entry.provider}:${entry.name}:${index}`} fill={COLORS[index % COLORS.length]} />
-                                            ))}
-                                        </Pie>
-                                        <Tooltip />
-                                    </PieChart>
-                                </ResponsiveContainer>
-                            )}
-                        </div>
-                    </CardContent>
-                </Card>
-            </div>
+            <AdminDashboardCharts
+                dailyActivity={data.charts.dailyActivity}
+                modelUsage={data.charts.modelUsage}
+                labels={{
+                    dailyActivityTitle: t("app.admin.dashboard.page.kad5f5f05"),
+                    messagesName: t("app.admin.dashboard.page.kc199335d"),
+                    runsName: t("app.admin.dashboard.page.k3f539477"),
+                    invocationsName: t("app.admin.dashboard.page.k1a3ec470"),
+                    modelUsageTitle: t("app.admin.dashboard.page.kd35fe722"),
+                    noDataText: t("app.admin.dashboard.page.k393204db"),
+                }}
+            />
 
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_1fr]">
                 <Card className="flex h-[520px] min-h-0 flex-col">

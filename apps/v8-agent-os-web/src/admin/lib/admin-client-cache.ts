@@ -45,6 +45,38 @@ let cacheGeneration = 0;
 let observedEngineOrigin = "";
 let engineOriginReloadRequested = false;
 
+// 浏览器同源连接并发上限为 6，客户端微队列平滑调度，避免请求排队阻塞与连接饥饿
+const MAX_CONCURRENT_REQUESTS = 6;
+let activeRequestCount = 0;
+const requestQueue: Array<() => void> = [];
+
+function acquireRequestSlot(): Promise<() => void> {
+  if (activeRequestCount < MAX_CONCURRENT_REQUESTS) {
+    activeRequestCount++;
+    let released = false;
+    return Promise.resolve(() => {
+      if (released) return;
+      released = true;
+      activeRequestCount--;
+      const next = requestQueue.shift();
+      if (next) next();
+    });
+  }
+  return new Promise((resolve) => {
+    requestQueue.push(() => {
+      activeRequestCount++;
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        activeRequestCount--;
+        const next = requestQueue.shift();
+        if (next) next();
+      });
+    });
+  });
+}
+
 const DEFAULT_ENGINE_BASE_URL = "http://127.0.0.1:9530/v1";
 export const ADMIN_ENGINE_ORIGIN_CHANGED_EVENT = "v8os:admin-engine-origin-changed";
 
@@ -191,6 +223,8 @@ function clearAdminJsonCacheForEngineOriginChange() {
   const invalidatedKeys = new Set([...cache.keys(), ...listeners.keys()]);
   const controllers = [...cache.values()].flatMap((entry) => entry.controller ? [entry.controller] : []);
   cache.clear();
+  requestQueue.splice(0);
+  activeRequestCount = 0;
   for (const controller of controllers) controller.abort();
   for (const key of invalidatedKeys) notifySubscribers(key);
 }
@@ -263,7 +297,7 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
   if (!options.force && existing?.data !== undefined && existing.expiresAt > now) {
     return existing.data as T;
   }
-  if (!options.force && existing?.promise) {
+  if (existing?.promise) {
     return existing.promise as Promise<T>;
   }
 
@@ -275,7 +309,10 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
     requestTimedOut = true;
     controller.abort();
   }, timeoutMs);
-  const request: Promise<T> = fetch(key, { cache: "no-store", signal: controller.signal })
+  const request: Promise<T> = (async () => {
+    const releaseSlot = await acquireRequestSlot();
+    try {
+      return await fetch(key, { cache: "no-store", signal: controller.signal })
     .then(async (response) => {
       assertCurrentGeneration(requestGeneration);
       const payload = await response.json().catch(() => ({}));
@@ -318,6 +355,10 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
       throw requestError;
     })
     .finally(() => clearTimeout(timeout));
+    } finally {
+      releaseSlot();
+    }
+  })();
 
   publish(key, {
     data: existing?.data,

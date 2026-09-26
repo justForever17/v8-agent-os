@@ -107,7 +107,7 @@ def build(bundle: Path, output: Path, *, version: str | None = None, source_comm
         raise ValueError("portable Engine bundle is missing main.py, CLI entrypoint or .python runtime")
     validate_links(bundle)
     runtime = json.loads((engine_dir / ".python/v8os-runtime.json").read_text(encoding="utf-8"))
-    if runtime.get("profile") != "server" or runtime.get("target") != "linux-x64" or runtime.get("requirementsSha256") != sha256(engine_dir / "requirements/server-linux-x64.lock") or runtime.get("browserIncluded") is not True:
+    if runtime.get("profile") != "server" or runtime.get("target") != "linux-x64" or runtime.get("requirementsSha256") != sha256(engine_dir / "requirements/server-linux-x64.lock") or runtime.get("browserIncluded") not in (True, False):
         raise ValueError("Portable runtime receipt does not match server dependency/browser closure")
     root_name = f"v8os-engine-{version}-linux-x64"
     output.mkdir(parents=True, exist_ok=True)
@@ -127,8 +127,8 @@ def build(bundle: Path, output: Path, *, version: str | None = None, source_comm
             "# V8OS portable Engine\n\n"
             "This versioned runtime is managed by @v8-agent-os/v8-agent-os.\n"
             "Install the matching npm package and use its v8os command.\n"
-            "Python, server dependencies and headless Chromium are included; "
-            "host Chromium system libraries are still required.\n"
+            "Python and server dependencies are included.\n"
+            "Lightweight Engine utilizes system-installed Edge/Chrome or discovers host browser at runtime.\n"
             "User configuration, credentials and sessions remain in the separate V8OS state directory.\n",
             encoding="utf-8",
         )
@@ -145,6 +145,7 @@ def build(bundle: Path, output: Path, *, version: str | None = None, source_comm
             "python": "apps/v8-agent-os-engine/.python/bin/python3",
             "cli": "apps/v8-agent-os-cli/bin/v8os.mjs",
             "node": ">=22",
+            "browserIncluded": bool(runtime.get("browserIncluded", False)),
         }
         (staging / "engine-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         checksums = []

@@ -124,13 +124,26 @@ class PortableBundleTests(unittest.TestCase):
             self.build()
 
     def test_wrong_dependency_receipt_and_browser_omission_are_rejected(self):
-        for changes in ({"requirementsSha256": "0" * 64}, {"target": "linux-arm64"}, {"browserIncluded": False}):
+        for changes in ({"requirementsSha256": "0" * 64}, {"target": "linux-arm64"}, {"browserIncluded": "invalid"}):
             original = self.runtime_receipt.copy()
             self.runtime_receipt.update(changes)
             self.write_receipt()
             with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, "dependency/browser closure"):
                 self.build()
             self.runtime_receipt = original
+
+    def test_lightweight_runtime_without_bundled_browser_is_accepted(self):
+        original = self.runtime_receipt.copy()
+        self.runtime_receipt["browserIncluded"] = False
+        self.write_receipt()
+        try:
+            result = self.build()
+            self.assertTrue(Path(result["asset"]).is_file())
+            manifest = json.loads(Path(result["manifest"]).read_text())
+            self.assertEqual(manifest["target"], "linux-x64")
+        finally:
+            self.runtime_receipt = original
+            self.write_receipt()
 
     @unittest.skipUnless(sys.platform == "linux", "portable symlink/execute semantics require POSIX")
     def test_relative_python_symlink_survives_archive_and_escape_is_rejected(self):

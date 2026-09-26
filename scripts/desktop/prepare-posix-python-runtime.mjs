@@ -279,7 +279,6 @@ async function main() {
   const requirementsArg = argValue("--requirements-path");
   const serverProfile = hasFlag("--server");
   if (serverProfile && target !== "linux-x64") fail("Only linux-x64 has a validated server production dependency lock.");
-  if (serverProfile && hasFlag("--skip-playwright-browsers")) fail("The server portable runtime must include its headless Chromium binary.");
   const requirementsPath = requirementsArg
     ? path.resolve(requirementsArg)
     : path.join(engineDir, "requirements", serverProfile ? "server-linux-x64.lock" : "desktop-preview.txt");

@@ -154,7 +154,7 @@ function verifyEngineChecksums(filename, root, identity) {
     if (sha256Buffer(content) !== entries.get(member)) throw new Error(`Engine checksum mismatch for ${member}`);
   }
   const receipt = JSON.parse(archiveMember(filename, `${root}/${pythonReceipt}`));
-  if (receipt.schema !== 1 || receipt.profile !== "server" || receipt.target !== identity.target || receipt.browserIncluded !== true) {
+  if (receipt.schema !== 1 || receipt.profile !== "server" || receipt.target !== identity.target || typeof receipt.browserIncluded !== "boolean") {
     throw new Error("Engine runtime receipt does not match the server portable profile");
   }
 }

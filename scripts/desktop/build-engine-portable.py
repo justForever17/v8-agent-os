@@ -85,11 +85,9 @@ def build(target: str, output: Path, *, source_commit: str | None = None) -> dic
     if not python_entry.is_file():
         raise ValueError(f"Prepared portable Python runtime is missing: {python_entry}")
     browser_root = engine_root / ".playwright-browsers"
-    if not browser_root.is_dir() or (browser_root / "DEGRADED.txt").exists():
-        raise ValueError("Standalone Engine requires an embedded Playwright Chromium runtime; desktop discovery-only payload is not publishable")
-    browser_files = [item for item in browser_root.rglob("*") if item.is_file()]
-    if not browser_files:
-        raise ValueError("Standalone Engine browser payload does not contain a Chromium executable")
+    has_degraded_marker = (browser_root / "DEGRADED.txt").is_file() if browser_root.is_dir() else False
+    browser_files = [item for item in browser_root.rglob("*") if item.is_file() and item.name != "DEGRADED.txt"] if browser_root.is_dir() else []
+    browser_included = bool(browser_files and not has_degraded_marker)
     if source_commit is None:
         source_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     if not source_commit or len(source_commit) != 40:
@@ -105,8 +103,8 @@ def build(target: str, output: Path, *, source_commit: str | None = None) -> dic
     requirements = engine_root / "requirements" / "desktop-preview.txt"
     if not requirements.is_file() or receipt.get("requirementsSha256") != digest(requirements):
         raise ValueError("Portable Python runtime receipt does not match desktop dependency closure")
-    if receipt.get("browserIncluded") is not True:
-        raise ValueError("Standalone Engine requires browserIncluded=true in the runtime receipt")
+    if receipt.get("browserIncluded") not in (True, False):
+        raise ValueError("Standalone Engine runtime receipt must declare a boolean browserIncluded property")
     release = json.loads((ROOT / "release-manifest.json").read_text(encoding="utf-8"))["release"]
     version = release["version"]
     root_name = f"v8os-engine-{version}-{target}"
@@ -144,7 +142,7 @@ def build(target: str, output: Path, *, source_commit: str | None = None) -> dic
             "python": python_relative.as_posix(),
             "cli": (CLI / "bin" / "v8os.mjs").as_posix(),
             "node": ">=22",
-            "browserIncluded": True,
+            "browserIncluded": bool(receipt.get("browserIncluded", False)),
         }
         (staging / "engine-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         checksums = []
@@ -152,7 +150,8 @@ def build(target: str, output: Path, *, source_commit: str | None = None) -> dic
             "# V8OS portable Engine\n\n"
             "Managed by @v8-agent-os/v8-agent-os. Use `v8os start` to launch it.\n"
             "The matching Node.js package owns lifecycle, state and credentials.\n"
-            "Host system libraries required by browser/desktop automation remain platform-specific.\n",
+            "Host system libraries required by browser/desktop automation remain platform-specific.\n"
+            "Lightweight Engine utilizes system-installed Edge/Chrome or discovers host browser at runtime.\n",
             encoding="utf-8",
         )
         for item in sorted(staging.rglob("*")):

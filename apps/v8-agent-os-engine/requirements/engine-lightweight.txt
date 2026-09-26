@@ -1,0 +1,11 @@
+# Lightweight Engine profile for npm / TUI / CLI distributions.
+# Excludes heavy local vector DBs (chromadb), voice synthesis (edge_tts),
+# and on-demand media tools (yt-dlp, psd-tools, boto3).
+-r base.txt
+
+beautifulsoup4
+scrapling[fetchers]==0.4.1
+playwright
+patchright
+jieba
+langchain-text-splitters

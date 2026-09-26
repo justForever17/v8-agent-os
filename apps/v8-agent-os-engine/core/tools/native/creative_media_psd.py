@@ -128,6 +128,17 @@ def _hex_to_rgba(value: Any, default: tuple[int, int, int, int] = (0, 0, 0, 0)) 
 def _psd_tools_status() -> tuple[Any | None, Any | None, Any | None, str | None]:
     try:
         from psd_tools import PSDImage  # type: ignore
+    except (ImportError, ModuleNotFoundError):
+        try:
+            from core.runtime_dependency_autoinstall import ensure_runtime_dependency
+
+            ok, err = ensure_runtime_dependency("psd-tools", import_name="psd_tools")
+            if ok:
+                from psd_tools import PSDImage  # type: ignore
+            else:
+                return None, None, None, f"psd-tools is not installed and JIT auto-install failed: {err}"
+        except Exception as exc:
+            return None, None, None, f"psd-tools is not installed: {exc}"
     except Exception as exc:
         return None, None, None, f"psd-tools is not installed: {exc}"
     try:

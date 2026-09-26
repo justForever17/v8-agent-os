@@ -7,13 +7,11 @@ beautifulsoup4
 # Last fetchers bundle compatible with the macOS 12 Playwright 1.56 floor.
 scrapling[fetchers]==0.4.1
 playwright
-yt-dlp
 jieba
 chromadb==1.5.9
 langchain-text-splitters
 numpy
 Pillow
-psd-tools[composite]>=1.10.0
 
 pywin32; sys_platform == "win32"
 pywinpty; sys_platform == "win32"

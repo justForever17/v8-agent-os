@@ -217,10 +217,15 @@ function verifyMacosCheckpointSaverWithoutSqliteVec(python) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const expectedGap = pipCheck.status === 1
-    && !pipCheck.error
-    && pipCheckLines.length === 1
-    && /^langgraph-checkpoint-sqlite 3\.1\.1 requires sqlite-vec, which is not installed\.?$/i.test(pipCheckLines[0]);
+  const expectedGaps = [
+    /^langgraph-checkpoint-sqlite 3\.1\.1 requires sqlite-vec, which is not installed\.?$/i,
+    /^chromadb.*requires (kubernetes|onnxruntime)/i,
+  ];
+  const expectedGap = (pipCheck.status === 0 && pipCheckLines.length === 0) || (
+    !pipCheck.error
+    && pipCheckLines.length > 0
+    && pipCheckLines.every((line) => expectedGaps.some((p) => p.test(line)))
+  );
   if (!expectedGap) {
     if (pipCheck.stdout) process.stdout.write(pipCheck.stdout);
     if (pipCheck.stderr) process.stderr.write(pipCheck.stderr);
@@ -334,9 +339,29 @@ async function main() {
       "-c",
       "import curl_cffi; from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher; print('V8OS_RESEARCH_FETCHERS_OK')",
     ]);
+    if (!serverProfile) {
+      run(python, ["-m", "pip", "uninstall", "-y", "kubernetes", "onnxruntime"]);
+    }
     if (runtime.platform === "linux" && !serverProfile) {
       await installLinuxPyatspi(python, runtimeDir, workDir);
-      run(python, ["-m", "pip", "check"]);
+      const pipCheck = spawnSync(
+        python,
+        ["-m", "pip", "check", "--disable-pip-version-check"],
+        { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: 2 * 60 * 1000 },
+      );
+      const pipCheckLines = String(pipCheck.stdout || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const expectedGaps = [
+        /^chromadb.*requires (kubernetes|onnxruntime)/i,
+      ];
+      const ok = (pipCheck.status === 0 && pipCheckLines.length === 0) || (
+        !pipCheck.error && pipCheckLines.every((l) => expectedGaps.some((p) => p.test(l)))
+      );
+      if (!ok) {
+        fail(`Unexpected dependency defect in Linux Python runtime: ${pipCheck.stdout}`);
+      }
     } else if (runtime.platform === "darwin" && !serverProfile) {
       verifyMacosCheckpointSaverWithoutSqliteVec(python);
     }

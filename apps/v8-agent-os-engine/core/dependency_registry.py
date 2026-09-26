@@ -24,6 +24,13 @@ _dependency_status_cache: tuple[float, list[dict[str, Any]]] | None = None
 _dependency_status_cache_lock = threading.Lock()
 
 
+def invalidate_dependency_cache() -> None:
+    """Clear cached dependency status so new detections take effect immediately."""
+    global _dependency_status_cache
+    with _dependency_status_cache_lock:
+        _dependency_status_cache = None
+
+
 DEPENDENCY_REGISTRY: list[dict[str, Any]] = [
     {
         "id": "python",

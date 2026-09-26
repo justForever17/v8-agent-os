@@ -407,6 +407,26 @@ def _sandbox_launch(
     return wrapped, environment
 
 
+def _inject_managed_runtime_paths(env: dict[str, str] | None) -> dict[str, str]:
+    child_env = dict(env or os.environ)
+    try:
+        executable = Path(sys.executable).resolve()
+        managed_dirs = [str(executable.parent)]
+        scripts_dir = executable.parent / "Scripts"
+        if scripts_dir.is_dir():
+            managed_dirs.append(str(scripts_dir))
+        bin_dir = executable.parent / "bin"
+        if bin_dir.is_dir():
+            managed_dirs.append(str(bin_dir))
+        current_path = child_env.get("PATH", "")
+        prefix = os.pathsep.join(managed_dirs)
+        if prefix:
+            child_env["PATH"] = f"{prefix}{os.pathsep}{current_path}" if current_path else prefix
+    except Exception:
+        pass
+    return child_env
+
+
 def execute_governed_argv(
     argv: list[str],
     *,
@@ -489,6 +509,7 @@ def execute_governed_argv(
     ) as envelope:
         try:
             sandbox_argv, sandbox_env = _sandbox_launch(governed_context, normalized_argv)
+            sandbox_env = _inject_managed_runtime_paths(sandbox_env)
             result = run_windowless_bounded(
                 sandbox_argv,
                 shell=False,
@@ -2887,7 +2908,7 @@ class BackgroundProcess:
                     pty_command = f"[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); {command}"
                 base_argv = _shell_command_argv(pty_command, self.shell_dialect)
                 shell_argv, sandbox_env = _sandbox_launch(self.runtime_context, base_argv)
-                child_env = dict(sandbox_env or os.environ)
+                child_env = _inject_managed_runtime_paths(dict(sandbox_env or os.environ))
                 child_env.update(self.terminal_env_overrides)
                 executable = str(shutil.which(shell_argv[0], path=child_env.get("PATH")) or shell_argv[0])
                 sandbox_policy = self.runtime_context.get("sandbox_policy") or self.runtime_context.get("sandboxPolicy")
@@ -2934,7 +2955,7 @@ class BackgroundProcess:
             pid, self.fd = pty.fork()
             if pid == 0:
                 command_argv = list(posix_command_argv or ["sh", "-c", command])
-                child_env = dict(posix_command_env or os.environ)
+                child_env = _inject_managed_runtime_paths(dict(posix_command_env or os.environ))
                 child_env.update(self.terminal_env_overrides)
                 os.chdir(self.cwd)
                 os.execvpe(command_argv[0], command_argv, child_env)
@@ -2948,7 +2969,7 @@ class BackgroundProcess:
                 self.shell_dialect,
                 self.runtime_context,
             )
-            child_env = dict(sandbox_env or os.environ)
+            child_env = _inject_managed_runtime_paths(dict(sandbox_env or os.environ))
             child_env.update(self.terminal_env_overrides)
             popen_kwargs: dict[str, Any] = {}
             if sys.platform != "win32":

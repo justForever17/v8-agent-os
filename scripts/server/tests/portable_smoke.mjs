@@ -61,11 +61,17 @@ try {
   assert.equal(created.trust.registered, true, 'Real Engine must accept the authenticated workspace request');
   assert(fs.existsSync(path.join(workspace, '.agents/rules/AGENTS.md')));
   assert.equal(command('workspace', 'show').path, workspace);
-  const browser = execFileSync(python, [path.join(runtime, 'scripts/server/verify_server.py'), '--bundle', runtime, '--browser'], {
-    env: { ...env, PLAYWRIGHT_BROWSERS_PATH: path.join(engine, '.playwright-browsers'), PYTHONDONTWRITEBYTECODE: '1' },
-    encoding: 'utf8', timeout: 180_000, maxBuffer: 4 * 1024 * 1024,
-  });
-  assert(browser.includes('"javascript": true'), 'Headless Chromium must execute the page JS via the real Agent browser owner');
+  const engineManifestPath = path.join(runtime, 'engine-manifest.json');
+  const engineManifest = fs.existsSync(engineManifestPath) ? JSON.parse(fs.readFileSync(engineManifestPath, 'utf8')) : {};
+  let browserJsProof = false;
+  if (engineManifest.browserIncluded) {
+    const browser = execFileSync(python, [path.join(runtime, 'scripts/server/verify_server.py'), '--bundle', runtime, '--browser'], {
+      env: { ...env, PLAYWRIGHT_BROWSERS_PATH: path.join(engine, '.playwright-browsers'), PYTHONDONTWRITEBYTECODE: '1' },
+      encoding: 'utf8', timeout: 180_000, maxBuffer: 4 * 1024 * 1024,
+    });
+    assert(browser.includes('"javascript": true'), 'Headless Chromium must execute the page JS via the real Agent browser owner');
+    browserJsProof = true;
+  }
   const database = path.join(state, 'state.db');
   assert(fs.statSync(database).size > 0);
   const integrity = execFileSync(python, ['-I', '-c',
@@ -84,7 +90,7 @@ try {
   }
   console.log(JSON.stringify({ acceptance: 'portable-engine', version: release.version, sourceCommit: release.sourceCommit,
     hostPython: false, offlineRuntime: true, npmFirstStart: true, profile: 'server', duplicateStart: true, consoleRelocation: true,
-    authenticatedWorkspace: true, sqliteIntegrity: true, browserJavascript: true, restartPersistence: true,
+    authenticatedWorkspace: true, sqliteIntegrity: true, browserJavascript: browserJsProof, restartPersistence: true,
     adminAndWebAbsent: true }));
 } finally {
   if (started) command('stop');

@@ -38,12 +38,23 @@ def digest(path: Path) -> str:
     return value.hexdigest()
 
 
+IGNORED_PACKAGES = {
+    "kubernetes", "onnxruntime", "onnxruntime_capi",
+    "scipy", "scipy.libs", "skimage", "scikit_image",
+    "yt_dlp", "boto3", "botocore",
+}
+
+
 def copy_tree(source: Path, destination: Path) -> None:
     if not source.is_dir():
         raise FileNotFoundError(source)
     def ignored(_directory: str, names: list[str]) -> set[str]:
         result = set()
         for name in names:
+            norm_name = name.lower().replace("-", "_")
+            if any(norm_name == p or norm_name.startswith(f"{p}-") or norm_name.startswith(f"{p}_") or norm_name.startswith(f"{p}.") for p in IGNORED_PACKAGES):
+                result.add(name)
+                continue
             if name in IGNORED_DIRS or name in IGNORED_FILES or name == "tests" or name == "native" or name.startswith("pytest-of-"):
                 result.add(name)
             elif name.endswith((".pyc", ".pyo", ".db", ".log")) or name.startswith(".env"):

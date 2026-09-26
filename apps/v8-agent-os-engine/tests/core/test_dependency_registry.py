@@ -91,3 +91,7 @@ def test_dependency_registry_reuses_short_lived_snapshot(monkeypatch):
     assert calls == len(dependency_registry.DEPENDENCY_REGISTRY)
     assert first == second
     assert first is not second
+
+    dependency_registry.invalidate_dependency_cache()
+    third = dependency_registry.build_dependency_status()
+    assert calls == len(dependency_registry.DEPENDENCY_REGISTRY) * 2

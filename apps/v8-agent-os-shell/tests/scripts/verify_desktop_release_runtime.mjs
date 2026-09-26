@@ -307,8 +307,6 @@ if (exists(pythonExe)) {
     chromaRustNative: "chromadb_rust_bindings",
     playwright: "playwright",
     tiktokenNative: "tiktoken._tiktoken",
-    ytDlp: "yt_dlp",
-    psdTools: "psd_tools",
     pillow: "PIL",
   };
   if (process.platform === "win32") {
@@ -334,6 +332,8 @@ if (exists(pythonExe)) {
     requiredModules.secretStorage = "secretstorage";
   }
   const optionalModules = {
+    ytDlp: "yt_dlp",
+    psdTools: "psd_tools",
     sqliteVec: "sqlite_vec",
     pywinauto: "pywinauto",
     patchright: "patchright",
@@ -343,6 +343,8 @@ if (exists(pythonExe)) {
     rpaFramework: "RPA",
   };
   const optionalModuleReasons = {
+    ytDlp: "yt-dlp is an on-demand runtime dependency autoinstalled upon first video download request",
+    psdTools: "psd-tools is an on-demand runtime dependency autoinstalled upon first PSD parsing request",
     sqliteVec:
       process.platform === "win32" && process.arch === "arm64"
         ? "sqlite-vec does not publish a Windows ARM64 wheel; the required checkpoint saver path is verified separately"

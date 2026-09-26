@@ -19,8 +19,21 @@ def _s3_config() -> dict[str, Any]:
 
 
 def _client(config: dict[str, Any]):
-    import boto3
-    from botocore.config import Config as BotoConfig
+    try:
+        import boto3
+        from botocore.config import Config as BotoConfig
+    except (ImportError, ModuleNotFoundError):
+        import sys
+        from core.runtime_dependency_autoinstall import ensure_runtime_dependency
+
+        ok, err = ensure_runtime_dependency("boto3")
+        if not ok:
+            raise RuntimeError(
+                f"S3 工具需要 boto3，按需自愈安装失败：{err}。"
+                f"请检查网络连接或执行受管安装：{sys.executable} -m pip install boto3"
+            )
+        import boto3
+        from botocore.config import Config as BotoConfig
 
     return boto3.client(
         "s3",

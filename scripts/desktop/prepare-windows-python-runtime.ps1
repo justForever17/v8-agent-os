@@ -546,6 +546,9 @@ Invoke-Checked -FilePath $pythonExe -Arguments @(
   "import curl_cffi; from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher; print('V8OS_RESEARCH_FETCHERS_OK')"
 )
 
+# Strip unused desktop deadweight pulled by ChromaDB (kubernetes 115MB, onnxruntime 46MB)
+Invoke-Checked -FilePath $pythonExe -Arguments @("-m", "pip", "uninstall", "-y", "kubernetes", "onnxruntime")
+
 if ($Architecture -eq "arm64") {
   $arm64CompatibilityVersionProbe = @"
 from importlib.metadata import version
@@ -723,19 +726,24 @@ result = subprocess.run(
     text=True,
 )
 lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-missing_dependency = re.fullmatch(
-    r"^(\S+)\s+(\S+)\s+requires\s+(\S+),\s+which\s+is\s+not\s+installed\.?$",
-    lines[0],
-    re.IGNORECASE,
-) if len(lines) == 1 else None
-known_gap = bool(
-    result.returncode == 1
-    and missing_dependency
-    and canonicalize_name(missing_dependency.group(1)) == "langgraph-checkpoint-sqlite"
-    and missing_dependency.group(2) == "3.1.1"
-    and canonicalize_name(missing_dependency.group(3)) == "sqlite-vec"
-)
-if known_gap:
+
+def is_known_gap(line: str) -> bool:
+    missing = re.fullmatch(
+        r"^(\S+)\s+(\S+)\s+requires\s+(\S+),\s+which\s+is\s+not\s+installed\.?$",
+        line,
+        re.IGNORECASE,
+    )
+    if not missing:
+        return False
+    pkg, req = canonicalize_name(missing.group(1)), canonicalize_name(missing.group(3))
+    if pkg == "langgraph-checkpoint-sqlite" and req == "sqlite-vec":
+        return True
+    if pkg == "chromadb" and req in {"kubernetes", "onnxruntime"}:
+        return True
+    return False
+
+known_gap = bool(lines and all(is_known_gap(l) for l in lines))
+if known_gap or not lines:
     print("V8OS_ARM64_PIP_CHECK_EXPECTED_GAP_ONLY")
 else:
     print(result.stdout, end="")

@@ -51,7 +51,7 @@ jobs:
           bundle=("$RUNNER_TEMP"/engine-source/v8os-server-*-linux-x64)
           [[ ${#bundle[@]} == 1 && -d "${bundle[0]}" ]]
           V8_ENGINE_DIR="${bundle[0]}/apps/v8-agent-os-engine" \
-            node scripts/desktop/prepare-posix-python-runtime.mjs --target linux-x64 --server
+            node scripts/desktop/prepare-posix-python-runtime.mjs --target linux-x64 --server --skip-playwright-browsers
           python scripts/server/build-engine-bundle.py --bundle "${bundle[0]}" --output out/server
       - name: Install exact npm and portable archives without host Python or runtime downloads
         if: matrix.node == '22' && matrix.ubuntu == '24.04'

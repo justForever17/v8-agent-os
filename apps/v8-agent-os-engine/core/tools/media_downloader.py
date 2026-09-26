@@ -1319,6 +1319,18 @@ def _load_yt_dlp():
         import yt_dlp  # type: ignore
 
         return yt_dlp, None
+    except (ImportError, ModuleNotFoundError):
+        try:
+            from core.runtime_dependency_autoinstall import ensure_runtime_dependency
+
+            ok, err = ensure_runtime_dependency("yt-dlp", import_name="yt_dlp")
+            if ok:
+                import yt_dlp  # type: ignore
+
+                return yt_dlp, None
+            return None, f"自动按需安装 yt-dlp 失败: {err}"
+        except Exception as exc:
+            return None, str(exc)
     except Exception as exc:  # pragma: no cover
         return None, str(exc)
 

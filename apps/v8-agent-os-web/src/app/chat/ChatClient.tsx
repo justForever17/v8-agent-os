@@ -1941,16 +1941,16 @@ export default function ChatClient() {
             return;
         }
         setSessionProjection(null);
-        setLiveGovernanceApprovals([]);
-        setResolvedGovernanceApprovalIds([]);
-        setGovernanceApprovalOverlaySessionId(activeConversationId);
-        setDismissedGovernanceApprovalId("");
-        setGovernanceApprovalOpen(false);
         latestRealtimeSeqRef.current = 0;
         snapshotCoveredRealtimeSeqRef.current = 0;
         seenRealtimeEventIdentitiesRef.current.clear();
         historyLoadControllerRef.current?.abort();
         historyLoadControllerRef.current = null;
+        setLiveGovernanceApprovals([]);
+        setResolvedGovernanceApprovalIds([]);
+        setGovernanceApprovalOverlaySessionId(activeConversationId);
+        setDismissedGovernanceApprovalId("");
+        setGovernanceApprovalOpen(false);
         if (previousConversationId && messagesRef.current.length > 0) {
             messageCacheRef.current.set(previousConversationId, cloneMessages(messagesRef.current));
         }

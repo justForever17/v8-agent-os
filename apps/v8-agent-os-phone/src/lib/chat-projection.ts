@@ -494,7 +494,7 @@ export function buildPhoneChatProjection({
         ? selectedRuntimeId
         : preferredRuntimeId;
     const scopedApprovals = (approvals || []).filter((item) => {
-        const itemSessionId = String(item.sessionId || item.session_id || "").trim();
+        const itemSessionId = String(item.session_id || "").trim();
         return !itemSessionId || !activeConversationId || itemSessionId === activeConversationId;
     });
     const governanceApprovals = scopedApprovals;

@@ -50,18 +50,24 @@ const MAX_CONCURRENT_REQUESTS = 6;
 let activeRequestCount = 0;
 const requestQueue: Array<() => void> = [];
 
-function acquireRequestSlot(): Promise<() => void> {
+function tryAcquireRequestSlot(): (() => void) | null {
   if (activeRequestCount < MAX_CONCURRENT_REQUESTS) {
     activeRequestCount++;
     let released = false;
-    return Promise.resolve(() => {
+    return () => {
       if (released) return;
       released = true;
       activeRequestCount--;
       const next = requestQueue.shift();
       if (next) next();
-    });
+    };
   }
+  return null;
+}
+
+function acquireRequestSlot(): Promise<() => void> {
+  const syncSlot = tryAcquireRequestSlot();
+  if (syncSlot) return Promise.resolve(syncSlot);
   return new Promise((resolve) => {
     requestQueue.push(() => {
       activeRequestCount++;
@@ -297,7 +303,7 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
   if (!options.force && existing?.data !== undefined && existing.expiresAt > now) {
     return existing.data as T;
   }
-  if (existing?.promise) {
+  if (!options.force && existing?.promise) {
     return existing.promise as Promise<T>;
   }
 
@@ -309,56 +315,60 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
     requestTimedOut = true;
     controller.abort();
   }, timeoutMs);
-  const request: Promise<T> = (async () => {
-    const releaseSlot = await acquireRequestSlot();
-    try {
-      return await fetch(key, { cache: "no-store", signal: controller.signal })
-    .then(async (response) => {
-      assertCurrentGeneration(requestGeneration);
-      const payload = await response.json().catch(() => ({}));
-      assertCurrentGeneration(requestGeneration);
-      if (!response.ok) {
-        const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
-        const message = [record.detail, record.error, record.message]
-          .map((value) => typeof value === "string" ? value
-            : value && typeof value === "object" && "message" in value ? value.message : undefined)
-          .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
-        throw new Error(message?.trim() || `HTTP ${response.status}`);
-      }
-      const current = cache.get(key);
-      if (current?.requestId === requestId) {
-        publish(key, {
-          data: payload,
-          expiresAt: Date.now() + ttlMs,
-          updatedAt: Date.now(),
-          isFetching: false,
-          error: null,
-        });
-      }
-      return payload as T;
-    })
-    .catch((error) => {
-      assertCurrentGeneration(requestGeneration);
-      const requestError = requestTimedOut
-        ? new Error("admin_request_timeout")
-        : error;
-      const current = cache.get(key);
-      if (current?.requestId === requestId) {
-        publish(key, {
-          data: current.data,
-          expiresAt: current.expiresAt,
-          updatedAt: current.updatedAt,
-          isFetching: false,
-          error: errorMessage(requestError),
-        });
-      }
-      throw requestError;
-    })
-    .finally(() => clearTimeout(timeout));
-    } finally {
-      releaseSlot();
-    }
-  })();
+
+  const executeFetch = (releaseSlot: () => void): Promise<T> => {
+    return fetch(key, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        assertCurrentGeneration(requestGeneration);
+        const payload = await response.json().catch(() => ({}));
+        assertCurrentGeneration(requestGeneration);
+        if (!response.ok) {
+          const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+          const message = [record.detail, record.error, record.message]
+            .map((value) => typeof value === "string" ? value
+              : value && typeof value === "object" && "message" in value ? value.message : undefined)
+            .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
+          throw new Error(message?.trim() || `HTTP ${response.status}`);
+        }
+        const current = cache.get(key);
+        if (current?.requestId === requestId) {
+          publish(key, {
+            data: payload,
+            expiresAt: Date.now() + ttlMs,
+            updatedAt: Date.now(),
+            isFetching: false,
+            error: null,
+          });
+        }
+        return payload as T;
+      })
+      .catch((error) => {
+        assertCurrentGeneration(requestGeneration);
+        const requestError = requestTimedOut
+          ? new Error("admin_request_timeout")
+          : error;
+        const current = cache.get(key);
+        if (current?.requestId === requestId) {
+          publish(key, {
+            data: current.data,
+            expiresAt: current.expiresAt,
+            updatedAt: current.updatedAt,
+            isFetching: false,
+            error: errorMessage(requestError),
+          });
+        }
+        throw requestError;
+      })
+      .finally(() => {
+        clearTimeout(timeout);
+        releaseSlot();
+      });
+  };
+
+  const syncSlot = tryAcquireRequestSlot();
+  const request: Promise<T> = syncSlot
+    ? executeFetch(syncSlot)
+    : acquireRequestSlot().then((slot) => executeFetch(slot));
 
   publish(key, {
     data: existing?.data,

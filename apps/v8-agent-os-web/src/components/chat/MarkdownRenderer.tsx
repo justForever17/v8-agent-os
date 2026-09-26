@@ -105,6 +105,15 @@ async function loadWorkspaceAssetBaseUrl() {
 }
 
 function preprocessContent(content: string, workspaceAssetBaseUrl: string): string {
+    if (!content) return "";
+
+    const hasHttp = content.includes("http://") || content.includes("https://");
+    const hasWorkspace = content.includes("workspace");
+    const hasDrivePath = /[A-Za-z]:[\\/]/.test(content);
+    if (!hasHttp && !hasWorkspace && !hasDrivePath) {
+        return content;
+    }
+
     const linkedWorkspacePaths = content
         .replace(/workspace:\/\/([^\s<>()"'`]+)/gi, (_match, path) => `[${String(path).split(/[\\/]/).pop() || path}](#v8-workbench-file=${encodeURIComponent(path)})`)
         .replace(/(?<![\w:/])([A-Za-z]:[\\/][^\s<>()"'`]+\.[A-Za-z0-9]{1,10})(?=$|[\s,;)])/g, (_match, path) => `[${String(path).split(/[\\/]/).pop() || path}](#v8-workbench-file=${encodeURIComponent(path)})`);
@@ -135,9 +144,11 @@ function preprocessContent(content: string, workspaceAssetBaseUrl: string): stri
 
     // 2. Match pure URLs (not in Markdown links and NOT in code blocks anymore)
     // Exclude backticks from URL match to avoid consuming trailing code fences
+    if (!hasHttp) return processed;
     return processed.replace(
-        /(?<!\]\()(?<!\[.*\]\()(?<!\!\[.*\]\()(https?:\/\/[^\s<>"'`)]+)/gi,
+        /(!?\[[^\]\r\n]*\]\((?:https?:\/\/[^\s<>"'`)]+)\))|(https?:\/\/[^\s<>"'`)]+)/gi,
         (match) => {
+            if (match.startsWith('[') || match.startsWith('![')) return match;
             // Check video platforms
             for (const platform of VIDEO_PLATFORMS) {
                 if (platform.regex.test(match)) {

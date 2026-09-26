@@ -1,13 +1,49 @@
 "use client";
 
 import * as React from "react";
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Check, Copy, FileCode, Eye, Download, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { MermaidRenderer } from "./MermaidRenderer";
+import dynamic from "next/dynamic";
 
+const MermaidRenderer = dynamic(
+    () => import("./MermaidRenderer").then((mod) => mod.MermaidRenderer),
+    {
+        ssr: false,
+        loading: () => (
+            <div className="flex h-32 w-full items-center justify-center rounded-lg border border-border bg-muted/20 text-xs text-muted-foreground animate-pulse">
+                Loading diagram...
+            </div>
+        ),
+    }
+);
+
+
+const LazySyntaxHighlighter = dynamic(
+    () => Promise.all([
+        import('react-syntax-highlighter').then((m) => m.Prism),
+        import('react-syntax-highlighter/dist/esm/styles/prism').then((m) => m.vscDarkPlus),
+    ]).then(([Highlighter, theme]) => {
+        return function HighlightedCode({ language, value, className }: { language: string; value: string; className?: string }) {
+            return (
+                <Highlighter
+                    style={theme}
+                    language={language}
+                    PreTag="div"
+                    customStyle={{ margin: 0, width: '100%' }}
+                    wrapLines={true}
+                    wrapLongLines={true}
+                    className={className}
+                >
+                    {value}
+                </Highlighter>
+            );
+        };
+    }),
+    {
+        ssr: false,
+    }
+);
 
 interface CodeBlockProps {
     language: string;
@@ -70,17 +106,11 @@ export function CodeBlock({ language, value, className, isStreaming }: CodeBlock
                 </Button>
             </div>
             <div className="overflow-x-auto w-full max-h-[500px] overflow-y-auto custom-scrollbar">
-                <SyntaxHighlighter
-                    style={vscDarkPlus}
+                <LazySyntaxHighlighter
                     language={language}
-                    PreTag="div"
-                    customStyle={{ margin: 0, width: '100%' }}
-                    wrapLines={true}
-                    wrapLongLines={true}
-                    {...{ className }}
-                >
-                    {value}
-                </SyntaxHighlighter>
+                    value={value}
+                    className={className}
+                />
             </div>
         </div>
     );

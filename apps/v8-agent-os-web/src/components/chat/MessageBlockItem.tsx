@@ -5,7 +5,6 @@ import { ArtifactCard } from "./ArtifactCard";
 import { CodeBlock } from "./CodeBlock";
 import { PPTCard } from "./PPTCard";
 import { HTMLFileCard } from "./HTMLFileCard";
-import { MermaidRenderer } from "./MermaidRenderer";
 import { VoiceCard } from "./VoiceCard";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { createInlineArtifactDocument } from "@/lib/workbench";
@@ -27,6 +26,18 @@ const ModelViewer = dynamic(
     {
         ssr: false,
         loading: () => <ModelViewerLoading />,
+    }
+);
+
+const MermaidRenderer = dynamic(
+    () => import("./MermaidRenderer").then((mod) => mod.MermaidRenderer),
+    {
+        ssr: false,
+        loading: () => (
+            <div className="flex h-32 w-full items-center justify-center rounded-lg border border-border bg-muted/20 text-xs text-muted-foreground animate-pulse">
+                Loading diagram...
+            </div>
+        ),
     }
 );
 

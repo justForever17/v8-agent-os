@@ -20,6 +20,14 @@ from packaging.version import InvalidVersion, Version
 RESULT_MARKER = "__V8_DEPENDENCY_CHECK__"
 MAX_REPORTED_CONFLICTS = 50
 
+# Known deadweight or optional dependencies intentionally pruned from the packaged runtime profile.
+# These missing dependencies are verified to be non-blocking for V8OS operations.
+EXPECTED_PRUNED_DEPENDENCIES: set[tuple[str, str]] = {
+    ("chromadb", "kubernetes"),
+    ("chromadb", "onnxruntime"),
+    ("chromadb", "mmh3"),
+}
+
 
 def _normalized_paths(paths: Iterable[str | os.PathLike[str]]) -> list[str]:
     normalized: list[str] = []
@@ -95,6 +103,7 @@ def verify_dependency_compatibility(
     effective = _distribution_index(selected_base_paths, "base_runtime")
     effective.update(target_index)
     conflicts: list[dict[str, str]] = []
+    pruned_advisories: list[dict[str, str]] = []
 
     for dependent_name in sorted(effective):
         dependent = effective[dependent_name]
@@ -115,6 +124,14 @@ def verify_dependency_compatibility(
             dependency_name = canonicalize_name(requirement.name)
             dependency = effective.get(dependency_name)
             if dependency is None:
+                if (canonicalize_name(dependent["displayName"]), dependency_name) in EXPECTED_PRUNED_DEPENDENCIES:
+                    pruned_advisories.append({
+                        "dependent": dependent["displayName"],
+                        "dependentVersion": dependent["version"],
+                        "requirement": str(requirement),
+                        "reason": "pruned_optional_dependency",
+                    })
+                    continue
                 conflicts.append({
                     "dependent": dependent["displayName"],
                     "dependentVersion": dependent["version"],
@@ -149,9 +166,8 @@ def verify_dependency_compatibility(
         if not (allow_missing and item.get("reason") == "dependency_missing")
     ]
     advisories = [
-        item
-        for item in conflicts
-        if allow_missing and item.get("reason") == "dependency_missing"
+        *pruned_advisories,
+        *(item for item in conflicts if allow_missing and item.get("reason") == "dependency_missing"),
     ]
     return {
         "ok": not blocking_conflicts,

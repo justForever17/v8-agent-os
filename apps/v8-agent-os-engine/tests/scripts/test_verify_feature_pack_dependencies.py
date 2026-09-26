@@ -96,3 +96,17 @@ def test_hashed_feature_pack_can_defer_missing_metadata_to_smoke_without_ignorin
     assert result["advisoryCount"] == 1
     assert result["advisories"][0]["reason"] == "dependency_missing"
     assert result["missingDependencyPolicy"] == "smoke_check"
+
+
+def test_feature_pack_dependency_check_exempts_pruned_chromadb_deadweights(tmp_path: Path) -> None:
+    base = tmp_path / "base"
+    target = tmp_path / "target"
+    _write_distribution(base, "chromadb", "1.5.9", ("kubernetes>=28.1.0", "onnxruntime>=1.14.1"))
+    _write_distribution(target, "doc-reader", "1.0")
+
+    result = verify_dependency_compatibility(target, base_paths=[base], allow_missing=False)
+
+    assert result["ok"] is True
+    assert result["conflictCount"] == 0
+    assert result["advisoryCount"] == 2
+    assert {item["reason"] for item in result["advisories"]} == {"pruned_optional_dependency"}

@@ -493,14 +493,18 @@ export function buildPhoneChatProjection({
     const resolvedRuntimeId = selectedRuntimeId && runtimeStageModel.items.some((item) => item.id === selectedRuntimeId)
         ? selectedRuntimeId
         : preferredRuntimeId;
-    const governanceApprovals = approvals;
+    const scopedApprovals = (approvals || []).filter((item) => {
+        const itemSessionId = String(item.sessionId || item.session_id || "").trim();
+        return !itemSessionId || !activeConversationId || itemSessionId === activeConversationId;
+    });
+    const governanceApprovals = scopedApprovals;
     const askUserPendingApproval = (askUserInteractions || []).find((item) => String(item.status || "pending").toLowerCase() === "pending") || null;
-    const governancePendingApproval = approvals[0] || null;
+    const governancePendingApproval = scopedApprovals[0] || null;
     const preferredPendingApproval = askUserPendingApproval || governancePendingApproval;
     const runControlState = deriveRunControlState({
         activeConversation,
         runtime,
-        approvals,
+        approvals: scopedApprovals,
         processes: scopedProcesses,
     });
 

@@ -1333,9 +1333,10 @@ export default function ChatClient() {
         const overlayMatchesSession = governanceApprovalOverlaySessionId === activeConversationId;
         const resolvedIds = new Set(overlayMatchesSession ? resolvedGovernanceApprovalIds : []);
         const seenIds = new Set<string>();
+        const projectionMatchesSession = !sessionProjection?.sessionId || sessionProjection.sessionId === activeConversationId;
         return [
             ...(overlayMatchesSession ? liveGovernanceApprovals : []),
-            ...(sessionProjection?.approvals || []),
+            ...(projectionMatchesSession ? (sessionProjection?.approvals || []) : []),
         ].filter((approval) => {
             const approvalId = readString(approval.id)
                 || readString(approval.approvalId)
@@ -1343,10 +1344,14 @@ export default function ChatClient() {
             if (!approvalId || resolvedIds.has(approvalId) || seenIds.has(approvalId)) {
                 return false;
             }
+            const itemSessionId = readString(approval.sessionId) || readString(approval.session_id);
+            if (itemSessionId && activeConversationId && itemSessionId !== activeConversationId) {
+                return false;
+            }
             seenIds.add(approvalId);
             return true;
         });
-    }, [activeConversationId, governanceApprovalOverlaySessionId, liveGovernanceApprovals, resolvedGovernanceApprovalIds, sessionProjection?.approvals]);
+    }, [activeConversationId, governanceApprovalOverlaySessionId, liveGovernanceApprovals, resolvedGovernanceApprovalIds, sessionProjection?.approvals, sessionProjection?.sessionId]);
     const governancePendingApproval = governanceApprovals[0] || null;
     const governancePendingApprovalId = String(governancePendingApproval?.id || "").trim();
     const governancePendingApprovalIdRef = useRef(governancePendingApprovalId);
@@ -1935,6 +1940,12 @@ export default function ChatClient() {
         if (previousConversationId === activeConversationId) {
             return;
         }
+        setSessionProjection(null);
+        setLiveGovernanceApprovals([]);
+        setResolvedGovernanceApprovalIds([]);
+        setGovernanceApprovalOverlaySessionId(activeConversationId);
+        setDismissedGovernanceApprovalId("");
+        setGovernanceApprovalOpen(false);
         latestRealtimeSeqRef.current = 0;
         snapshotCoveredRealtimeSeqRef.current = 0;
         seenRealtimeEventIdentitiesRef.current.clear();

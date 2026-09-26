@@ -64,7 +64,21 @@ export class Client {
     return result;
   };
   subscribe = (fn: () => void) => { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; };
-  changed = () => { this.revision++; for (const fn of this.listeners) fn(); };
+  private batchTimer?: NodeJS.Timeout;
+  changed = (immediate = false) => {
+    this.revision++;
+    if (immediate || typeof setTimeout === 'undefined' || this.listeners.size === 0) {
+      if (this.batchTimer) { clearTimeout(this.batchTimer); this.batchTimer = undefined; }
+      for (const fn of this.listeners) fn();
+      return;
+    }
+    if (this.batchTimer) return;
+    this.batchTimer = setTimeout(() => {
+      this.batchTimer = undefined;
+      for (const fn of this.listeners) fn();
+    }, 16);
+    this.batchTimer.unref?.();
+  };
   getRevision = () => this.revision;
   save(now = false) {
     clearTimeout(this.saveTimer);
@@ -288,7 +302,13 @@ export class Client {
       await new Promise(resolve => { const timer = setTimeout(resolve, Math.min(8000, 500 * 2 ** failures)); timer.unref(); });
     }
   }
-  stop() { this.stopped = true; this.generation++; this.transportAbort.abort(); this.save(true); }
+  stop() {
+    this.stopped = true;
+    if (this.batchTimer) { clearTimeout(this.batchTimer); this.batchTimer = undefined; }
+    this.generation++;
+    this.transportAbort.abort();
+    this.save(true);
+  }
   async ensureSession() {
     if (this.view.sessionId) return this.view.sessionId;
     if (!this.view.workspace) throw new Error('请先在设置中选择并确认工作区。');

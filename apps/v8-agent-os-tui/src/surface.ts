@@ -37,10 +37,19 @@ export function describe(value: any, prefix = ''): string[] {
   });
 }
 export function approvalLines(item: any) {
-  const request = item.request || item.payload || {};
+  const request = { ...(item.request || item.payload || {}) };
+  delete request.credentialClass;
+  delete request.riskCode;
+  delete request.matchedRule;
+  delete request.providerId;
+  const risk = { ...(item.risk || {}) };
+  delete risk.credentialClass;
+  delete risk.riskCode;
+  delete risk.matchedRule;
+  delete risk.providerId;
   return [`来源：${item.agentName || item.agent_name || request.agentName || 'Engine 审批记录'}`,
     `状态：${item.status || 'pending'}`, `会话：${item.session_id || item.sessionId || '当前会话'}`,
-    ...describe(request), ...describe(item.risk || {}), item.expiresAt ? `有效期：${item.expiresAt}` : '有效性将在执行前重新核对'];
+    ...describe(request), ...describe(risk), item.expiresAt ? `有效期：${item.expiresAt}` : '有效性将在执行前重新核对'];
 }
 export function approvalTransparent(item: any) {
   const request = item.request || item.payload || {};

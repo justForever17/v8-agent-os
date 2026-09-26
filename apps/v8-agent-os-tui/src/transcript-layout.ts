@@ -69,11 +69,15 @@ export class TranscriptLayout<Message = { id: string; content: string }> {
   clear() { this.cache.clear(); this.widths.clear(); this.cachedCharacters = 0; }
 
   private width(grapheme: string): number {
-    if (grapheme.length === 1 && grapheme.charCodeAt(0) >= 32 && grapheme.charCodeAt(0) <= 126) return 1;
+    if (grapheme.length === 1) {
+      const code = grapheme.charCodeAt(0);
+      if (code >= 32 && code <= 126) return 1;
+      if ((code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3400 && code <= 0x4dbf) || (code >= 0xff01 && code <= 0xff5e)) return 2;
+    }
     const cached = this.widths.get(grapheme);
     if (cached !== undefined) return cached;
     const result = stringWidth(grapheme);
-    if (this.widths.size >= 1024) this.widths.delete(this.widths.keys().next().value!);
+    if (this.widths.size >= 4096) this.widths.delete(this.widths.keys().next().value!);
     if (grapheme.length <= 128) this.widths.set(grapheme, result);
     return result;
   }

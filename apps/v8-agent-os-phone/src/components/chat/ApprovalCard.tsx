@@ -89,14 +89,19 @@ export const ApprovalCard = memo(function ApprovalCard({
     const summary = eventSummary && typeof eventSummary === "object" && !Array.isArray(eventSummary)
         ? eventSummary as Record<string, unknown>
         : {};
-    const summaryRows = ["operation", "target", "host", "providerId", "credentialClass", "riskCode", "matchedRule", "nextAction"]
+    // Omit meaningless raw code primitives (riskCode, credentialClass, matchedRule, providerId)
+    // and keep only meaningful human facts (operation, target, host, nextAction).
+    const meaningfulKeys = detailsExpanded
+        ? ["operation", "target", "host", "nextAction", "providerId", "riskCode", "matchedRule", "credentialClass"]
+        : ["operation", "target", "host", "nextAction"];
+    const summaryRows = meaningfulKeys
         .map((key) => {
             const value = summary[key];
             return typeof value === "string" && value.trim() ? { key, value: value.trim() } : null;
         })
         .filter((item): item is { key: string; value: string } => Boolean(item));
     const visibleSummaryRows = compact && !detailsExpanded
-        ? summaryRows.filter((row) => row.key === "operation" || row.key === "target")
+        ? summaryRows.filter((row) => row.key === "operation" || row.key === "target" || row.key === "host")
         : summaryRows;
     const detailLabel = t(detailsExpanded
         ? "src.components.chat.approvalcard.collapse_details"
@@ -130,7 +135,7 @@ export const ApprovalCard = memo(function ApprovalCard({
                 >
                     <MaterialCommunityIcons
                         name={accent.icon as never}
-                        size={18}
+                        size={compact ? 14 : 18}
                         color={isDark ? accent.darkIcon : accent.lightIcon}
                     />
                 </View>
@@ -146,7 +151,7 @@ export const ApprovalCard = memo(function ApprovalCard({
                     >
                         <Text numberOfLines={compact ? 1 : undefined} style={[styles.title, compact && styles.compactTitle, { color: isDark ? accent.darkText : accent.lightText }]}>{title}</Text>
                         {displayStatus ? <Badge variant="outline">{displayStatus}</Badge> : null}
-                        {compact ? <MaterialCommunityIcons name={detailsExpanded ? "chevron-up" : "chevron-down"} size={18} color={isDark ? accent.darkIcon : accent.lightIcon} /> : null}
+                        {compact ? <MaterialCommunityIcons name={detailsExpanded ? "chevron-up" : "chevron-down"} size={14} color={isDark ? accent.darkIcon : accent.lightIcon} /> : null}
                     </Pressable>
                     <ScrollView
                         style={styles.detailScroll}
@@ -163,8 +168,8 @@ export const ApprovalCard = memo(function ApprovalCard({
                             <View style={[styles.summaryBox, compact && styles.compactSummaryBox, { borderColor: isDark ? accent.darkBorder : accent.lightBorder }]}>
                                 {visibleSummaryRows.map((row) => (
                                     <View key={row.key} style={styles.summaryRow}>
-                                        <Text style={[styles.summaryKey, { color: isDark ? `${accent.darkText}B3` : `${accent.lightText}B3` }]}>{compact ? t(`src.components.chat.approvalcard.field.${row.key}`) : row.key}</Text>
-                                        <Text selectable numberOfLines={compact && !detailsExpanded ? 1 : undefined} style={[styles.summaryValue, { color: isDark ? accent.darkText : accent.lightText }]}>{row.value}</Text>
+                                        <Text style={[styles.summaryKey, compact && styles.compactSummaryKey, { color: isDark ? `${accent.darkText}B3` : `${accent.lightText}B3` }]}>{t(`src.components.chat.approvalcard.field.${row.key}`) || row.key}</Text>
+                                        <Text selectable numberOfLines={compact && !detailsExpanded ? 1 : undefined} style={[styles.summaryValue, compact && styles.compactSummaryValue, { color: isDark ? accent.darkText : accent.lightText }]}>{row.value}</Text>
                                     </View>
                                 ))}
                             </View>
@@ -190,9 +195,9 @@ const styles = StyleSheet.create({
         elevation: 2,
     },
     compactCard: {
-        borderRadius: 14,
-        paddingHorizontal: 9,
-        paddingVertical: 8,
+        borderRadius: 10,
+        paddingHorizontal: 8,
+        paddingVertical: 6,
         shadowOpacity: 0,
         elevation: 0,
     },
@@ -202,7 +207,7 @@ const styles = StyleSheet.create({
         gap: 12,
     },
     compactRow: {
-        gap: 8,
+        gap: 6,
     },
     iconWrap: {
         width: 36,
@@ -212,16 +217,16 @@ const styles = StyleSheet.create({
         justifyContent: "center",
     },
     compactIconWrap: {
-        width: 28,
-        height: 28,
-        borderRadius: 11,
+        width: 22,
+        height: 22,
+        borderRadius: 7,
     },
     body: {
         flex: 1,
         gap: 8,
     },
     compactBody: {
-        gap: 4,
+        gap: 3,
     },
     header: {
         flexDirection: "row",
@@ -230,9 +235,9 @@ const styles = StyleSheet.create({
         gap: 8,
     },
     compactHeader: {
-        minHeight: 32,
+        minHeight: 24,
         flexWrap: "nowrap",
-        gap: 5,
+        gap: 4,
     },
     title: {
         fontSize: 12,
@@ -241,17 +246,18 @@ const styles = StyleSheet.create({
     },
     compactTitle: {
         flex: 1,
+        fontSize: 11,
     },
     copy: {
         fontSize: 14,
         lineHeight: 22,
     },
     compactCopy: {
-        fontSize: 12,
-        lineHeight: 18,
+        fontSize: 11,
+        lineHeight: 16,
     },
     detailScroll: {
-        maxHeight: 190,
+        maxHeight: 140,
     },
     hint: {
         fontSize: 12,
@@ -265,24 +271,33 @@ const styles = StyleSheet.create({
         gap: 6,
     },
     compactSummaryBox: {
-        borderRadius: 10,
-        paddingHorizontal: 7,
-        paddingVertical: 5,
-        gap: 3,
+        borderRadius: 8,
+        paddingHorizontal: 6,
+        paddingVertical: 4,
+        gap: 2,
     },
     summaryRow: {
         flexDirection: "row",
         alignItems: "flex-start",
-        gap: 8,
+        gap: 6,
     },
     summaryKey: {
         width: 104,
         fontSize: 11,
         fontWeight: "800",
     },
+    compactSummaryKey: {
+        width: 72,
+        fontSize: 10,
+        fontWeight: "700",
+    },
     summaryValue: {
         flex: 1,
         fontSize: 11,
         lineHeight: 16,
+    },
+    compactSummaryValue: {
+        fontSize: 10,
+        lineHeight: 14,
     },
 });

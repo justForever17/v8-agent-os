@@ -4120,6 +4120,9 @@ export default function ChatScreen() {
 
     useEffect(() => {
         setOverviewPanelOpen(false);
+        setApprovals([]);
+        setGovernanceApprovalOpen(false);
+        setDismissedGovernanceApprovalId("");
     }, [activeConversationId]);
 
     useEffect(() => {

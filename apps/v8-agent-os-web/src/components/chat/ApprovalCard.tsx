@@ -32,6 +32,17 @@ const TONE_STYLES: Record<ApprovalTone, { wrapper: string; icon: string }> = {
     },
 };
 
+const FACT_LABELS: Record<string, string> = {
+    operation: "操作动作",
+    target: "涉及目标",
+    host: "目标设备",
+    providerId: "执行服务",
+    credentialClass: "凭据级别",
+    riskCode: "风险事件",
+    matchedRule: "安全规则",
+    nextAction: "处理指引",
+};
+
 function asRecord(value: unknown): Record<string, unknown> | null {
     return value && typeof value === "object" && !Array.isArray(value)
         ? value as Record<string, unknown>
@@ -46,10 +57,10 @@ function summaryRows(value: unknown) {
         .map((key) => {
             const item = summary[key];
             return typeof item === "string" && item.trim()
-                ? { key, value: item.trim() }
+                ? { key, label: FACT_LABELS[key] || key, value: item.trim() }
                 : null;
         })
-        .filter((item): item is { key: string; value: string } => Boolean(item));
+        .filter((item): item is { key: string; label: string; value: string } => Boolean(item));
 }
 
 function shortMessage(value: string) {
@@ -67,8 +78,6 @@ export function ApprovalCard({
     showStatus = true,
     showHint = true,
 }: ApprovalCardProps) {
-    // Kept for callers that still pass the legacy hint flag. Generic cards now
-    // expose their full message in the disclosure instead of repeating a hint.
     void showHint;
     const styles = TONE_STYLES[tone];
     const Icon = tone === "control" ? AlertTriangle : ShieldAlert;
@@ -79,38 +88,48 @@ export function ApprovalCard({
     return (
         <details
             data-approval-card="compact"
-            className={`group my-1 overflow-hidden rounded-xl border shadow-sm transition-shadow hover:shadow-md ${styles.wrapper}`}
+            className={`group my-1 max-w-2xl overflow-hidden rounded-lg border shadow-xs transition-all hover:shadow-sm ${styles.wrapper}`}
         >
             <summary
-                className="flex cursor-pointer list-none items-center gap-2.5 rounded-xl px-2.5 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-current [&::-webkit-details-marker]:hidden"
+                className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-2.5 py-1.5 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-current [&::-webkit-details-marker]:hidden"
                 title={fullMessage || title}
             >
                 {showIcon ? (
-                    <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${styles.icon}`} aria-hidden="true">
-                        <Icon className="h-3.5 w-3.5" />
+                    <div className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md ${styles.icon}`} aria-hidden="true">
+                        <Icon className="h-3 w-3" />
                     </div>
                 ) : null}
                 <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 items-center gap-1.5">
                         <strong className="truncate text-[11px] font-semibold tracking-wide" title={title}>{title}</strong>
-                        {showStatus && status ? <Badge variant="outline" className="h-5 shrink-0 rounded-md px-1.5 text-[10px] font-medium">{status}</Badge> : null}
+                        {showStatus && status ? (
+                            <Badge variant="outline" className="h-4 shrink-0 rounded px-1 text-[9px] font-medium leading-none">
+                                {status}
+                            </Badge>
+                        ) : null}
                     </div>
                     <div
-                        className="mt-0.5 truncate text-xs leading-5 text-current/80"
+                        className="mt-0.5 truncate text-[11px] leading-4 text-current/75"
                         title={fullMessage || undefined}
                     >
                         {messageSummary}
                     </div>
                 </div>
-                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-current/60 group-open:rotate-180" aria-hidden="true" />
+                <ChevronDown className="h-3 w-3 shrink-0 text-current/50 transition-transform duration-150 group-open:rotate-180" aria-hidden="true" />
             </summary>
-            <div className="select-text border-t border-current/10 px-3 py-2.5 text-xs leading-5">
+            <div className="select-text border-t border-current/10 bg-current/[0.02] px-2.5 py-2 text-[11px] leading-4">
                 <p className="whitespace-pre-wrap break-words">{fullMessage || "—"}</p>
                 {rows.length ? (
-                    <dl className="mt-2 grid gap-1 border-t border-current/10 pt-2">
+                    <dl className="mt-1.5 grid gap-1 border-t border-current/10 pt-1.5">
                         {rows.map((row) => (
-                            <div key={row.key} className="grid grid-cols-[minmax(0,6rem)_minmax(0,1fr)] gap-2">
-                                <dt className="break-words font-medium text-current/60">{row.key}</dt>
+                            <div key={row.key} className="grid grid-cols-[minmax(0,5.5rem)_minmax(0,1fr)] gap-1.5">
+                                <dt className="break-words font-medium text-current/60" title={row.key}>
+                                    {row.label !== row.key ? (
+                                        <span>{row.label} <span className="text-[9px] opacity-40">({row.key})</span></span>
+                                    ) : (
+                                        row.key
+                                    )}
+                                </dt>
                                 <dd className="whitespace-pre-wrap break-all text-current/90">{row.value}</dd>
                             </div>
                         ))}
@@ -120,3 +139,4 @@ export function ApprovalCard({
         </details>
     );
 }
+

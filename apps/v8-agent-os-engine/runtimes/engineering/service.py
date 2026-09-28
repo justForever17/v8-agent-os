@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -365,20 +366,25 @@ class EngineeringLaneService:
         budget = _safe_int(cfg.get("contextPackBudget"), 48000, 800, 128000)
         trigger = self.trigger_decision(user_query=user_query, mode=mode, workspace_descriptor=descriptor)
         source_diags: list[dict[str, Any]] = []
-        repo_brief = self._repo_brief(root)
-        rules_digest = self._workspace_rules_digest(root, budget=max(200, budget // 5), diagnostics=source_diags)
-        git_summary = self._git_summary(root)
-        manifests = self._manifest_summary(root)
-        critical_files = self._critical_file_candidates(
-            root,
-            user_query=user_query,
-            limit=_safe_int(cfg.get("maxCriticalFiles"), 24, 4, 120),
-        )
-        workflow_paths = self._ranked_workflow_paths(
-            query=user_query,
-            scope_chain=self._scope_chain_for_descriptor(descriptor),
-            max_paths=_safe_int(cfg.get("rankedWorkflowPathCount"), 3, 1, 5),
-        )
+        rules_budget = max(200, budget // 5)
+        crit_files_limit = _safe_int(cfg.get("maxCriticalFiles"), 24, 4, 120)
+        wf_max_paths = _safe_int(cfg.get("rankedWorkflowPathCount"), 3, 1, 5)
+        scope_chain = self._scope_chain_for_descriptor(descriptor)
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            fut_repo = executor.submit(self._repo_brief, root)
+            fut_rules = executor.submit(self._workspace_rules_digest, root, budget=rules_budget, diagnostics=source_diags)
+            fut_git = executor.submit(self._git_summary, root)
+            fut_manifests = executor.submit(self._manifest_summary, root)
+            fut_critical = executor.submit(self._critical_file_candidates, root, user_query=user_query, limit=crit_files_limit)
+            fut_workflow = executor.submit(self._ranked_workflow_paths, query=user_query, scope_chain=scope_chain, max_paths=wf_max_paths)
+
+            repo_brief = fut_repo.result()
+            rules_digest = fut_rules.result()
+            git_summary = fut_git.result()
+            manifests = fut_manifests.result()
+            critical_files = fut_critical.result()
+            workflow_paths = fut_workflow.result()
         evidence_graph_digest = self._evidence_graph_digest(
             root=root,
             user_query=user_query,

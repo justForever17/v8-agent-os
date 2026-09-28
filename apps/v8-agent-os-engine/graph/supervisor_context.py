@@ -4,6 +4,7 @@ import logging
 import platform
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage
@@ -1356,13 +1357,75 @@ def build_supervisor_system_content(
             for key in list(_STABLE_SYSTEM_CONTEXT_CACHE.keys())[: len(_STABLE_SYSTEM_CONTEXT_CACHE) - _STABLE_SYSTEM_CONTEXT_CACHE_LIMIT]:
                 _STABLE_SYSTEM_CONTEXT_CACHE.pop(key, None)
 
-    stage_started_at = time.perf_counter()
-    host_alerts_line = render_host_alerts_line()
-    context_preparation_ms = {"hostAlerts": round((time.perf_counter() - stage_started_at) * 1000, 2)}
+    engineering_context, engineering_budget_diagnostics = _render_engineering_context(state)
+    engineering_envelope = state.get("engineering_context") if isinstance(state.get("engineering_context"), dict) else {}
+    engineering_pack = engineering_envelope.get("contextPack") if isinstance(engineering_envelope.get("contextPack"), dict) else {}
+    engineering_suppression = engineering_pack.get("memorySuppression") if isinstance(engineering_pack.get("memorySuppression"), dict) else {}
+
+    context_preparation_ms: dict[str, float] = {}
+
+    def _probe_host_alerts():
+        t0 = time.perf_counter()
+        res = render_host_alerts_line()
+        return res, round((time.perf_counter() - t0) * 1000, 2)
+
+    def _probe_host_load():
+        t0 = time.perf_counter()
+        res = render_host_load_line()
+        return res, round((time.perf_counter() - t0) * 1000, 2)
+
+    def _probe_memory():
+        t0 = time.perf_counter()
+        res = memory_runtime.build_session_context(
+            user_query=user_query,
+            scope=current_scope,
+            scope_chain=scope_chain,
+            session_id=session_id,
+            run_id=state.get("run_id") or state.get("runId"),
+            suppress_daily_memory=bool(engineering_suppression.get("suppressDailyMemory")),
+            suppress_memory_map=bool(engineering_suppression.get("suppressMemoryMap")),
+            target_role="supervisor",
+        )
+        return res, round((time.perf_counter() - t0) * 1000, 2)
+
+    def _probe_rules():
+        t0 = time.perf_counter()
+        ctx, diags = _build_workspace_rules_context(state=state, session_id=session_id)
+        return (ctx, diags), round((time.perf_counter() - t0) * 1000, 2)
+
+    def _probe_kernel():
+        t0 = time.perf_counter()
+        ctx, diags = build_engineering_kernel_context(
+            state=state,
+            session_id=session_id,
+            actor="supervisor",
+        )
+        return (ctx, diags), round((time.perf_counter() - t0) * 1000, 2)
+
+    def _probe_registry():
+        t0 = time.perf_counter()
+        res = capability_registry.build_supervisor_summary(
+            user_query=user_query,
+            prioritized_kinds=["chat", "research", "engineering", "creative_media", "computer_use", "rpa", "memory", "channel", "automation"],
+        )
+        return res, round((time.perf_counter() - t0) * 1000, 2)
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        fut_alerts = executor.submit(_probe_host_alerts)
+        fut_load = executor.submit(_probe_host_load)
+        fut_mem = executor.submit(_probe_memory)
+        fut_rules = executor.submit(_probe_rules)
+        fut_kernel = executor.submit(_probe_kernel)
+        fut_reg = executor.submit(_probe_registry)
+
+        host_alerts_line, context_preparation_ms["hostAlerts"] = fut_alerts.result()
+        host_load_line, context_preparation_ms["hostLoad"] = fut_load.result()
+        memory_context, context_preparation_ms["memoryContext"] = fut_mem.result()
+        (workspace_rules_context, workspace_rules_diagnostics), context_preparation_ms["workspaceRules"] = fut_rules.result()
+        (workspace_state_context, workspace_state_diagnostics), context_preparation_ms["engineeringKernel"] = fut_kernel.result()
+        runtime_registry_context, context_preparation_ms["runtimeRegistry"] = fut_reg.result()
+
     host_alerts_context = f"{host_alerts_line}\n" if host_alerts_line else ""
-    stage_started_at = time.perf_counter()
-    host_load_line = render_host_load_line()
-    context_preparation_ms["hostLoad"] = round((time.perf_counter() - stage_started_at) * 1000, 2)
     env_context = (
         "<environment>\n"
         f"Current Time: {current_time}\n"
@@ -1372,20 +1435,6 @@ def build_supervisor_system_content(
         "</environment>\n"
     )
 
-    engineering_context, engineering_budget_diagnostics = _render_engineering_context(state)
-    engineering_envelope = state.get("engineering_context") if isinstance(state.get("engineering_context"), dict) else {}
-    engineering_pack = engineering_envelope.get("contextPack") if isinstance(engineering_envelope.get("contextPack"), dict) else {}
-    engineering_suppression = engineering_pack.get("memorySuppression") if isinstance(engineering_pack.get("memorySuppression"), dict) else {}
-    memory_context = memory_runtime.build_session_context(
-        user_query=user_query,
-        scope=current_scope,
-        scope_chain=scope_chain,
-        session_id=session_id,
-        run_id=state.get("run_id") or state.get("runId"),
-        suppress_daily_memory=bool(engineering_suppression.get("suppressDailyMemory")),
-        suppress_memory_map=bool(engineering_suppression.get("suppressMemoryMap")),
-        target_role="supervisor",
-    )
     network_supervisor_context = render_network_supervisor_context(state)
     if network_supervisor_context and _network_supervisor_third_party_managed(state):
         memory_context = ""
@@ -1399,14 +1448,6 @@ def build_supervisor_system_content(
         )
         memory_context = memory_budget.text
         memory_budget_diagnostics.append(memory_budget.diagnostic())
-    workspace_rules_context, workspace_rules_diagnostics = _build_workspace_rules_context(state=state, session_id=session_id)
-    stage_started_at = time.perf_counter()
-    workspace_state_context, workspace_state_diagnostics = build_engineering_kernel_context(
-        state=state,
-        session_id=session_id,
-        actor="supervisor",
-    )
-    context_preparation_ms["engineeringKernel"] = round((time.perf_counter() - stage_started_at) * 1000, 2)
     prompt_budget_diagnostics = [
         base_prompt_budget.diagnostic(),
         *workspace_state_diagnostics,
@@ -1414,11 +1455,6 @@ def build_supervisor_system_content(
         *memory_budget_diagnostics,
         *engineering_budget_diagnostics,
     ]
-
-    runtime_registry_context = capability_registry.build_supervisor_summary(
-        user_query=user_query,
-        prioritized_kinds=["chat", "research", "engineering", "creative_media", "computer_use", "rpa", "memory", "channel", "automation"],
-    )
 
     available_tools_context = cached_stable["availableToolsContext"]
     task_shape_hint = state.get("task_shape_hint") if isinstance(state.get("task_shape_hint"), dict) else {}

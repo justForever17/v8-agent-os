@@ -328,11 +328,11 @@ class MCPManager:
                 self._commit_inventory_revision()
                 return
 
-            for name, srv_config in servers.items():
+            async def _init_single_server(name: str, srv_config: dict[str, Any]) -> None:
                 self._server_config_fingerprints[name] = self._server_config_fingerprint(name, srv_config)
                 if self._closing:
-                    print("[MCP] Cleanup requested during initialize. Stopping further MCP bootstrap.")
-                    break
+                    print(f"[MCP] Cleanup requested during initialize. Skipping MCP '{name}'.")
+                    return
 
                 transport_type = srv_config.get("type") or ("stdio" if srv_config.get("command") else ("http" if str(srv_config.get("url") or "").startswith("http") else "sse"))
                 if srv_config.get("disabled", False):
@@ -347,7 +347,7 @@ class MCPManager:
                         executionImpacted=False,
                     )
                     print(f"[MCP] Server '{name}' is disabled. Skipping.")
-                    continue
+                    return
 
                 command = srv_config.get("command")
                 url = srv_config.get("url")
@@ -363,14 +363,14 @@ class MCPManager:
                         executionImpacted=False,
                     )
                     print(f"[MCP] Warning: Server '{name}' missing 'command' or 'url'. Skipping.")
-                    continue
+                    return
 
                 try:
                     await self._start_server(name, srv_config)
                 except asyncio.CancelledError:
                     if self._closing:
                         print(f"[MCP] MCP startup for '{name}' cancelled during shutdown.")
-                        break
+                        return
                     raise
                 except asyncio.TimeoutError:
                     print(f"[MCP] Timeout while loading MCP server '{name}' after {MCP_SERVER_INIT_TIMEOUT_SECONDS:.0f}s. Skipping for this boot.")
@@ -382,6 +382,10 @@ class MCPManager:
                         print(f"[MCP] Fatal error loading MCP server '{name}': {', '.join(causes)}")
                     else:
                         print(f"[MCP] Fatal error loading MCP server '{name}': {type(e).__name__}: {e}")
+
+            if servers:
+                init_tasks = [_init_single_server(name, srv_config) for name, srv_config in servers.items()]
+                await asyncio.gather(*init_tasks, return_exceptions=True)
 
             self._initialized = True
             self._startup_state = "ready"
@@ -858,6 +862,15 @@ class MCPManager:
                 )
                 changed_servers["removed"].append(removed_name)
 
+            async def _refresh_single_server(server_name: str, srv_config: dict[str, Any]) -> None:
+                try:
+                    await self._start_server(server_name, srv_config)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    print(f"[MCP] Delta refresh failed for server '{server_name}': {type(exc).__name__}: {exc}")
+
+            refresh_tasks = []
             for name, srv_config in sorted(servers.items(), key=lambda item: str(item[0]).lower()):
                 server_name = str(name)
                 srv_config = srv_config or {}
@@ -904,16 +917,14 @@ class MCPManager:
                         executionImpacted=False,
                     )
                 else:
-                    try:
-                        await self._start_server(server_name, srv_config)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        print(f"[MCP] Delta refresh failed for server '{server_name}': {type(exc).__name__}: {exc}")
+                    refresh_tasks.append(_refresh_single_server(server_name, srv_config))
                 if server_known:
                     changed_servers["updated"].append(server_name)
                 else:
                     changed_servers["added"].append(server_name)
+
+            if refresh_tasks:
+                await asyncio.gather(*refresh_tasks, return_exceptions=True)
 
             self._initialized = True
             self._startup_state = "ready"

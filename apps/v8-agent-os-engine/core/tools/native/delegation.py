@@ -6,6 +6,7 @@ import re
 import sys
 import uuid
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Any, Literal
 from urllib.parse import unquote, urlsplit
 
@@ -2303,6 +2304,224 @@ def _grandchild_write_contract_block_payload(
     )
 
 
+def _dispatch_single_external_worker(
+    *,
+    index: int,
+    task_brief: dict[str, Any],
+    workset_decision: dict[str, Any],
+    external_worker: dict[str, Any],
+    external_diagnostics: dict[str, Any],
+    invocation_id: str,
+    base_state: dict[str, Any],
+    current_depth: int,
+    runtime_context: dict[str, Any],
+    parallel_dispatch: bool,
+    tool_call_id: str | None,
+    registry_version: str,
+    registry_hash: str,
+    compat_source: str | None,
+    auto_dispatch_source: str | None,
+) -> tuple[int, dict[str, Any], dict[str, Any] | None]:
+    external_workspace: dict[str, Any] | None = None
+    external_task_brief = dict(task_brief)
+    if engineering_capsule_mode(external_task_brief) == "write":
+        # An opaque CLI worker cannot be constrained by native
+        # writeSet-aware file tools, so its write contract always
+        # needs the optional Git isolation boundary.
+        external_task_brief["requiresIsolation"] = True
+    external_seed = (
+        f"external::{invocation_id}::{index}::"
+        f"{str(task_brief.get('taskBriefId') or 'task')}::"
+        f"{str(external_worker.get('id') or 'worker')}"
+    )
+    try:
+        external_workspace = prepare_delegated_engineering_workspace(
+            base_state=base_state,
+            task_brief=external_task_brief,
+            delegation_id=external_seed,
+            current_depth=current_depth,
+            runtime_context=runtime_context,
+            parallel_dispatch=parallel_dispatch,
+        )
+    except Exception as exc:
+        workspace_failure = _engineering_workspace_preparation_failure(exc)
+        error_code = workspace_failure["code"]
+        item = _delegation_compact_item(
+            delegation_id=external_seed,
+            task_brief=task_brief,
+            lane="external_worker",
+            target_id=str(external_worker.get("id") or ""),
+            target_label=str(external_worker.get("name") or external_worker.get("id") or "external-worker"),
+            status="blocked",
+            invocation_id=invocation_id,
+            branch_index=index,
+            worker_type=str(external_worker.get("workerType") or "").strip() or None,
+            trace_ref=_delegation_trace_ref(
+                run_id=base_state.get("run_id"),
+                invocation_id=invocation_id,
+                branch_index=index,
+            ),
+            workset_dispatch_decision=workset_decision,
+            engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
+            registry_version=registry_version,
+            registry_hash=registry_hash,
+            repair_suggestion=workspace_failure["repairSuggestion"],
+            error=error_code,
+        )
+        return index, item, None
+
+    if external_workspace:
+        external_task_brief = bind_engineering_task_workspace(
+            external_task_brief,
+            workspace_path=str(external_workspace.get("workspace_path") or ""),
+            original_workspace_path=str(
+                external_workspace.get("original_workspace_path") or ""
+            ),
+            workspace_strategy=str(
+                external_workspace.get("engineering_workspace_strategy") or ""
+            ),
+            isolation_reasons=list(
+                external_workspace.get("engineering_workspace_strategy_reasons") or []
+            ),
+        )
+    execution_workspace_path = str(
+        (external_workspace or {}).get("workspace_path")
+        or base_state.get("workspace_path")
+        or ""
+    ).strip()
+    rendered_command = render_external_worker_command(
+        descriptor=external_worker,
+        task_brief=external_task_brief,
+        workspace_path=execution_workspace_path,
+        workspace_id=str(base_state.get("workspace_id") or ""),
+        project_id=str(base_state.get("project_id") or ""),
+    )
+    if not rendered_command:
+        item = _delegation_compact_item(
+            delegation_id=make_external_delegation_id(
+                command_id=f"missing-command-{index}",
+                task_brief_id=str(task_brief.get("taskBriefId") or ""),
+                worker_id=str(external_worker.get("id") or ""),
+            ),
+            task_brief=task_brief,
+            lane="external_worker",
+            target_id=str(external_worker.get("id") or ""),
+            target_label=str(external_worker.get("name") or external_worker.get("id") or "external-worker").strip(),
+            status="error",
+            invocation_id=invocation_id,
+            branch_index=index,
+            worker_type=str(external_worker.get("workerType") or "").strip() or None,
+            trace_ref=_delegation_trace_ref(run_id=base_state.get("run_id"), invocation_id=invocation_id, branch_index=index),
+            selection_reason=str(external_diagnostics.get("selectionReason") or "").strip() or None,
+            selection_confidence=external_diagnostics.get("selectionConfidence"),
+            match_signals=list(external_diagnostics.get("matchSignals") or []),
+            compat_source=compat_source or None,
+            auto_dispatch_source=auto_dispatch_source or None,
+            workset_dispatch_decision=workset_decision,
+            workset_conflict_group=list(workset_decision.get("worksetConflictGroup") or []),
+            engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
+            repair_suggestion=str(workset_decision.get("repairSuggestion") or "").strip() or None,
+            registry_version=registry_version,
+            registry_hash=registry_hash,
+            error="missing_command_template",
+        )
+        return index, item, external_task_brief
+
+    external_runtime_context = {
+        **runtime_context,
+        **dict(external_workspace or {}),
+        "runtime_kind": "delegation",
+        "engineering_capsule_mode": "write",
+        "managed_engineering_execution": True,
+    }
+    with bind_runtime_context(**external_runtime_context):
+        raw_start_payload = _delegation_command_session_broker().func(
+            mode="start",
+            command=rendered_command,
+            cwd=execution_workspace_path,
+            profile=external_worker_command_profile(external_worker),
+            tool_call_id=tool_call_id,
+        )
+    start_payload = json.loads(str(raw_start_payload or "{}"))
+    command_id = str(start_payload.get("commandId") or start_payload.get("sessionId") or "").strip()
+    worker_result = parse_external_worker_result_block(
+        start_payload.get("workerResultBlock") or start_payload.get("semanticTextTail") or start_payload.get("initialPreview"),
+        markers=((external_worker.get("resultSchema") or {}).get("markers") or []),
+    )
+    worker_result = _normalize_external_worker_result_paths(
+        worker_result,
+        workspace_path=execution_workspace_path,
+    )
+    worker_status = str(start_payload.get("state") or "running").strip() or "running"
+    if worker_result:
+        worker_status = _external_worker_status_from_result(worker_result, fallback="succeeded")
+    elif worker_status in {"completed", "failed"}:
+        worker_status = "marker_missing"
+    delegation_id_value = make_external_delegation_id(
+        command_id=command_id or f"pending-{uuid.uuid4().hex[:8]}",
+        task_brief_id=str(task_brief.get("taskBriefId") or ""),
+        worker_id=str(external_worker.get("id") or ""),
+    )
+    if external_workspace:
+        from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+        get_engineering_sandbox_service().associate_worktree_delegation(
+            worktree_id=str(external_workspace.get("worktree_id") or ""),
+            delegation_id=delegation_id_value,
+        )
+    managed_completion = _finalize_external_worker_workspace(
+        managed_workspace=external_workspace,
+        worker_status=worker_status,
+        run_id=str(base_state.get("run_id") or "").strip() or None,
+        invocation_id=invocation_id,
+    )
+    worker_item = _delegation_compact_item(
+        delegation_id=delegation_id_value,
+        task_brief=task_brief,
+        lane="external_worker",
+        target_id=str(external_worker.get("id") or ""),
+        target_label=str(external_worker.get("name") or external_worker.get("id") or "external-worker").strip(),
+        status=worker_status,
+        invocation_id=invocation_id,
+        branch_index=index,
+        worker_type=str(external_worker.get("workerType") or "").strip() or None,
+        command_session={
+            "commandId": command_id,
+            "sessionId": str(start_payload.get("sessionId") or command_id).strip() or command_id,
+            "runId": start_payload.get("runId"),
+            "profile": start_payload.get("profile"),
+            "workerResultDetected": bool(start_payload.get("workerResultDetected")),
+        },
+        trace_ref=_delegation_trace_ref(
+            run_id=start_payload.get("runId") or base_state.get("run_id"),
+            invocation_id=invocation_id,
+            branch_index=index,
+            command_id=command_id,
+        ),
+        local_self_check=str((worker_result or {}).get("localSelfCheck") or "").strip() or None,
+        artifact_refs=list((worker_result or {}).get("artifactRefs") or []),
+        acceptance_hint=(worker_result or {}).get("acceptanceHint"),
+        worker_result=worker_result,
+        result_schema_matched=bool(worker_result),
+        selection_reason=str(external_diagnostics.get("selectionReason") or "").strip() or None,
+        selection_confidence=external_diagnostics.get("selectionConfidence"),
+        match_signals=list(external_diagnostics.get("matchSignals") or []),
+        compat_source=compat_source or None,
+        auto_dispatch_source=auto_dispatch_source or None,
+        workset_dispatch_decision=workset_decision,
+        workset_conflict_group=list(workset_decision.get("worksetConflictGroup") or []),
+        engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
+        repair_suggestion=str(workset_decision.get("repairSuggestion") or "").strip() or None,
+        registry_version=registry_version,
+        registry_hash=registry_hash,
+        error=None if bool(start_payload.get("ok", True)) else str(start_payload.get("error") or "external_worker_start_failed"),
+    )
+    if external_workspace:
+        worker_item["engineeringWorkspace"] = external_workspace
+    worker_item.update(managed_completion)
+    return index, worker_item, external_task_brief
+
+
 @tool
 def delegation_broker(
     mode: Literal["dispatch", "observe", "inspect", "steer", "cancel", "await", "resume", "request_input", "publish_partial", "review_result"] = "observe",
@@ -2967,6 +3186,9 @@ def delegation_broker(
         sends: list[Send] = []
         items: list[dict[str, Any]] = []
         parallel_results: list[dict[str, Any]] = []
+        dispatch_items_by_index: dict[int, dict[str, Any]] = {}
+        parallel_results_by_index: dict[int, dict[str, Any]] = {}
+        external_worker_dispatches: list[dict[str, Any]] = []
 
         for index, task_brief in enumerate(normalized_tasks):
             workset_decision = workset_decisions[index] if index < len(workset_decisions) else {}
@@ -3119,53 +3341,49 @@ def delegation_broker(
                 except Exception as exc:
                     workspace_failure = _engineering_workspace_preparation_failure(exc)
                     error_code = workspace_failure["code"]
-                    parallel_results.append(
-                        {
-                            "invocationId": invocation_id,
-                            "taskBriefId": str(branch_task_brief.get("taskBriefId") or f"{invocation_id}:{index}").strip(),
-                            "taskBrief": branch_task_brief,
-                            "taskGoal": task_goal,
-                            "agentId": agent_id,
-                            "agentName": agent_name,
-                            "delegationId": delegation_id_value,
-                            "lane": "subagent",
-                            "targetId": target_id,
-                            "targetLabel": agent_name,
-                            "branchIndex": index,
-                            "status": "error",
-                            "error": error_code,
-                            "localSelfCheck": workspace_failure["localSelfCheck"],
-                            "acceptanceHint": workspace_failure["acceptanceHint"],
-                            "supervisorAcceptance": {
-                                "status": "pending",
-                                "requiredAction": ["retry", "ignore"],
-                            },
-                            "resultSchemaMatched": True,
-                        }
-                    )
-                    items.append(
-                        _delegation_compact_item(
-                            delegation_id=delegation_id_value,
-                            task_brief=task_brief,
-                            lane="subagent",
-                            target_id=target_id,
-                            target_label=agent_name,
-                            status="blocked",
+                    parallel_results_by_index[index] = {
+                        "invocationId": invocation_id,
+                        "taskBriefId": str(branch_task_brief.get("taskBriefId") or f"{invocation_id}:{index}").strip(),
+                        "taskBrief": branch_task_brief,
+                        "taskGoal": task_goal,
+                        "agentId": agent_id,
+                        "agentName": agent_name,
+                        "delegationId": delegation_id_value,
+                        "lane": "subagent",
+                        "targetId": target_id,
+                        "targetLabel": agent_name,
+                        "branchIndex": index,
+                        "status": "error",
+                        "error": error_code,
+                        "localSelfCheck": workspace_failure["localSelfCheck"],
+                        "acceptanceHint": workspace_failure["acceptanceHint"],
+                        "supervisorAcceptance": {
+                            "status": "pending",
+                            "requiredAction": ["retry", "ignore"],
+                        },
+                        "resultSchemaMatched": True,
+                    }
+                    dispatch_items_by_index[index] = _delegation_compact_item(
+                        delegation_id=delegation_id_value,
+                        task_brief=task_brief,
+                        lane="subagent",
+                        target_id=target_id,
+                        target_label=agent_name,
+                        status="blocked",
+                        invocation_id=invocation_id,
+                        branch_index=index,
+                        trace_ref=_delegation_trace_ref(
+                            run_id=base_state.get("run_id"),
                             invocation_id=invocation_id,
                             branch_index=index,
-                            trace_ref=_delegation_trace_ref(
-                                run_id=base_state.get("run_id"),
-                                invocation_id=invocation_id,
-                                branch_index=index,
-                            ),
-                            workset_dispatch_decision=workset_decision,
-                            engineering_capsule_attached=True,
-                            dispatch_blocked_reason=error_code,
-                            repair_suggestion=workspace_failure["repairSuggestion"],
-                            registry_version=registry_version,
-                            registry_hash=registry_hash,
-                            error=error_code,
-                        )
+                        ),
+                        workset_dispatch_decision=workset_decision,
+                        engineering_capsule_attached=True,
+                        dispatch_blocked_reason=error_code,
+                        repair_suggestion=workspace_failure["repairSuggestion"],
+                        registry_version=registry_version,
+                        registry_hash=registry_hash,
+                        error=error_code,
                     )
                     continue
                 requested_plugin_references = list(branch_task_brief.get("pluginReferences") or [])
@@ -3330,215 +3548,29 @@ def delegation_broker(
                     )
                 if managed_workspace:
                     compact_item["engineeringWorkspace"] = managed_workspace
-                items.append(compact_item)
+                dispatch_items_by_index[index] = compact_item
                 continue
 
             if external_worker:
-                external_workspace: dict[str, Any] | None = None
-                external_task_brief = dict(task_brief)
-                if engineering_capsule_mode(external_task_brief) == "write":
-                    # An opaque CLI worker cannot be constrained by native
-                    # writeSet-aware file tools, so its write contract always
-                    # needs the optional Git isolation boundary.
-                    external_task_brief["requiresIsolation"] = True
-                external_seed = (
-                    f"external::{invocation_id}::{index}::"
-                    f"{str(task_brief.get('taskBriefId') or 'task')}::"
-                    f"{str(external_worker.get('id') or 'worker')}"
+                external_worker_dispatches.append(
+                    {
+                        "index": index,
+                        "task_brief": task_brief,
+                        "workset_decision": workset_decision,
+                        "external_worker": external_worker,
+                        "external_diagnostics": external_diagnostics,
+                        "invocation_id": invocation_id,
+                        "base_state": base_state,
+                        "current_depth": current_depth,
+                        "runtime_context": runtime_context,
+                        "parallel_dispatch": len(normalized_tasks) > 1,
+                        "tool_call_id": tool_call_id,
+                        "registry_version": registry_version,
+                        "registry_hash": registry_hash,
+                        "compat_source": compat_source or None,
+                        "auto_dispatch_source": auto_dispatch_source or None,
+                    }
                 )
-                try:
-                    external_workspace = prepare_delegated_engineering_workspace(
-                        base_state=base_state,
-                        task_brief=external_task_brief,
-                        delegation_id=external_seed,
-                        current_depth=current_depth,
-                        runtime_context=runtime_context,
-                        parallel_dispatch=len(normalized_tasks) > 1,
-                    )
-                except Exception as exc:
-                    workspace_failure = _engineering_workspace_preparation_failure(exc)
-                    error_code = workspace_failure["code"]
-                    item = _delegation_compact_item(
-                        delegation_id=external_seed,
-                        task_brief=task_brief,
-                        lane="external_worker",
-                        target_id=str(external_worker.get("id") or ""),
-                        target_label=str(external_worker.get("name") or external_worker.get("id") or "external-worker"),
-                        status="blocked",
-                        invocation_id=invocation_id,
-                        branch_index=index,
-                        worker_type=str(external_worker.get("workerType") or "").strip() or None,
-                        trace_ref=_delegation_trace_ref(
-                            run_id=base_state.get("run_id"),
-                            invocation_id=invocation_id,
-                            branch_index=index,
-                        ),
-                        workset_dispatch_decision=workset_decision,
-                        engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
-                        registry_version=registry_version,
-                        registry_hash=registry_hash,
-                        repair_suggestion=workspace_failure["repairSuggestion"],
-                        error=error_code,
-                    )
-                    items.append(item)
-                    parallel_results.append(item)
-                    continue
-                if external_workspace:
-                    external_task_brief = bind_engineering_task_workspace(
-                        external_task_brief,
-                        workspace_path=str(external_workspace.get("workspace_path") or ""),
-                        original_workspace_path=str(
-                            external_workspace.get("original_workspace_path") or ""
-                        ),
-                        workspace_strategy=str(
-                            external_workspace.get("engineering_workspace_strategy") or ""
-                        ),
-                        isolation_reasons=list(
-                            external_workspace.get("engineering_workspace_strategy_reasons") or []
-                        ),
-                    )
-                    effective_task_briefs_by_id[
-                        str(external_task_brief.get("taskBriefId") or "").strip()
-                    ] = dict(external_task_brief)
-                execution_workspace_path = str(
-                    (external_workspace or {}).get("workspace_path")
-                    or base_state.get("workspace_path")
-                    or ""
-                ).strip()
-                rendered_command = render_external_worker_command(
-                    descriptor=external_worker,
-                    task_brief=external_task_brief,
-                    workspace_path=execution_workspace_path,
-                    workspace_id=str(base_state.get("workspace_id") or ""),
-                    project_id=str(base_state.get("project_id") or ""),
-                )
-                if not rendered_command:
-                    item = _delegation_compact_item(
-                        delegation_id=make_external_delegation_id(
-                            command_id=f"missing-command-{index}",
-                            task_brief_id=str(task_brief.get("taskBriefId") or ""),
-                            worker_id=str(external_worker.get("id") or ""),
-                        ),
-                        task_brief=task_brief,
-                        lane="external_worker",
-                        target_id=str(external_worker.get("id") or ""),
-                        target_label=str(external_worker.get("name") or external_worker.get("id") or "external-worker").strip(),
-                        status="error",
-                        invocation_id=invocation_id,
-                        branch_index=index,
-                        worker_type=str(external_worker.get("workerType") or "").strip() or None,
-                        trace_ref=_delegation_trace_ref(run_id=base_state.get("run_id"), invocation_id=invocation_id, branch_index=index),
-                        selection_reason=str(external_diagnostics.get("selectionReason") or "").strip() or None,
-                        selection_confidence=external_diagnostics.get("selectionConfidence"),
-                        match_signals=list(external_diagnostics.get("matchSignals") or []),
-                        compat_source=compat_source or None,
-                        auto_dispatch_source=auto_dispatch_source or None,
-                        workset_dispatch_decision=workset_decision,
-                        workset_conflict_group=list(workset_decision.get("worksetConflictGroup") or []),
-                        engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
-                        repair_suggestion=str(workset_decision.get("repairSuggestion") or "").strip() or None,
-                        registry_version=registry_version,
-                        registry_hash=registry_hash,
-                        error="missing_command_template",
-                    )
-                    items.append(item)
-                    parallel_results.append(item)
-                    continue
-
-                external_runtime_context = {
-                    **runtime_context,
-                    **dict(external_workspace or {}),
-                    "runtime_kind": "delegation",
-                    "engineering_capsule_mode": "write",
-                    "managed_engineering_execution": True,
-                }
-                with bind_runtime_context(**external_runtime_context):
-                    raw_start_payload = _delegation_command_session_broker().func(
-                        mode="start",
-                        command=rendered_command,
-                        cwd=execution_workspace_path,
-                        profile=external_worker_command_profile(external_worker),
-                        tool_call_id=tool_call_id,
-                    )
-                start_payload = json.loads(str(raw_start_payload or "{}"))
-                command_id = str(start_payload.get("commandId") or start_payload.get("sessionId") or "").strip()
-                worker_result = parse_external_worker_result_block(
-                    start_payload.get("workerResultBlock") or start_payload.get("semanticTextTail") or start_payload.get("initialPreview"),
-                    markers=((external_worker.get("resultSchema") or {}).get("markers") or []),
-                )
-                worker_result = _normalize_external_worker_result_paths(
-                    worker_result,
-                    workspace_path=execution_workspace_path,
-                )
-                worker_status = str(start_payload.get("state") or "running").strip() or "running"
-                if worker_result:
-                    worker_status = _external_worker_status_from_result(worker_result, fallback="succeeded")
-                elif worker_status in {"completed", "failed"}:
-                    worker_status = "marker_missing"
-                delegation_id_value = make_external_delegation_id(
-                    command_id=command_id or f"pending-{uuid.uuid4().hex[:8]}",
-                    task_brief_id=str(task_brief.get("taskBriefId") or ""),
-                    worker_id=str(external_worker.get("id") or ""),
-                )
-                if external_workspace:
-                    from core.engineering_sandbox.service import get_engineering_sandbox_service
-
-                    get_engineering_sandbox_service().associate_worktree_delegation(
-                        worktree_id=str(external_workspace.get("worktree_id") or ""),
-                        delegation_id=delegation_id_value,
-                    )
-                managed_completion = _finalize_external_worker_workspace(
-                    managed_workspace=external_workspace,
-                    worker_status=worker_status,
-                    run_id=str(base_state.get("run_id") or "").strip() or None,
-                    invocation_id=invocation_id,
-                )
-                worker_item = _delegation_compact_item(
-                    delegation_id=delegation_id_value,
-                    task_brief=task_brief,
-                    lane="external_worker",
-                    target_id=str(external_worker.get("id") or ""),
-                    target_label=str(external_worker.get("name") or external_worker.get("id") or "external-worker").strip(),
-                    status=worker_status,
-                    invocation_id=invocation_id,
-                    branch_index=index,
-                    worker_type=str(external_worker.get("workerType") or "").strip() or None,
-                    command_session={
-                        "commandId": command_id,
-                        "sessionId": str(start_payload.get("sessionId") or command_id).strip() or command_id,
-                        "runId": start_payload.get("runId"),
-                        "profile": start_payload.get("profile"),
-                        "workerResultDetected": bool(start_payload.get("workerResultDetected")),
-                    },
-                    trace_ref=_delegation_trace_ref(
-                        run_id=start_payload.get("runId") or base_state.get("run_id"),
-                        invocation_id=invocation_id,
-                        branch_index=index,
-                        command_id=command_id,
-                    ),
-                    local_self_check=str((worker_result or {}).get("localSelfCheck") or "").strip() or None,
-                    artifact_refs=list((worker_result or {}).get("artifactRefs") or []),
-                    acceptance_hint=(worker_result or {}).get("acceptanceHint"),
-                    worker_result=worker_result,
-                    result_schema_matched=bool(worker_result),
-                    selection_reason=str(external_diagnostics.get("selectionReason") or "").strip() or None,
-                    selection_confidence=external_diagnostics.get("selectionConfidence"),
-                    match_signals=list(external_diagnostics.get("matchSignals") or []),
-                    compat_source=compat_source or None,
-                    auto_dispatch_source=auto_dispatch_source or None,
-                    workset_dispatch_decision=workset_decision,
-                    workset_conflict_group=list(workset_decision.get("worksetConflictGroup") or []),
-                    engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
-                    repair_suggestion=str(workset_decision.get("repairSuggestion") or "").strip() or None,
-                    registry_version=registry_version,
-                    registry_hash=registry_hash,
-                    error=None if bool(start_payload.get("ok", True)) else str(start_payload.get("error") or "external_worker_start_failed"),
-                )
-                if external_workspace:
-                    worker_item["engineeringWorkspace"] = external_workspace
-                worker_item.update(managed_completion)
-                items.append(worker_item)
-                parallel_results.append(worker_item)
                 continue
 
             unresolved_lane = "external_worker" if lane_hint == "external_worker" else "subagent"
@@ -3565,8 +3597,38 @@ def delegation_broker(
                 registry_hash=registry_hash,
                 error="no_matching_target",
             )
-            items.append(item)
-            parallel_results.append(item)
+            dispatch_items_by_index[index] = item
+            parallel_results_by_index[index] = item
+
+        if len(external_worker_dispatches) == 1:
+            idx, worker_item, eff_brief = _dispatch_single_external_worker(**external_worker_dispatches[0])
+            dispatch_items_by_index[idx] = worker_item
+            parallel_results_by_index[idx] = worker_item
+            if eff_brief:
+                effective_task_briefs_by_id[
+                    str(eff_brief.get("taskBriefId") or "").strip()
+                ] = dict(eff_brief)
+        elif len(external_worker_dispatches) > 1:
+            max_workers = min(4, len(external_worker_dispatches))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(_dispatch_single_external_worker, **dispatch_kwargs)
+                    for dispatch_kwargs in external_worker_dispatches
+                ]
+                for fut in futures:
+                    idx, worker_item, eff_brief = fut.result()
+                    dispatch_items_by_index[idx] = worker_item
+                    parallel_results_by_index[idx] = worker_item
+                    if eff_brief:
+                        effective_task_briefs_by_id[
+                            str(eff_brief.get("taskBriefId") or "").strip()
+                        ] = dict(eff_brief)
+
+        for index in range(len(normalized_tasks)):
+            if index in dispatch_items_by_index:
+                items.append(dispatch_items_by_index[index])
+            if index in parallel_results_by_index:
+                parallel_results.append(parallel_results_by_index[index])
 
         summary = f"Delegation broker queued {len(items)} task(s): " + ", ".join(
             task_brief_summary(task_brief) or f"task-{index + 1}"

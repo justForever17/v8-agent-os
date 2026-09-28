@@ -4693,23 +4693,253 @@ def _run_search_shard(
     circuit_open_hosts: set[str] = set()
     accepted_read_count = 0
     accepted_evidence_count = len(captured_reads)
-    for result in top_results:
+
+    def _execute_network_read(candidate_item: dict[str, Any]) -> dict[str, Any]:
+        result = candidate_item["result"]
+        url = candidate_item["url"]
+        read_claim = candidate_item["read_claim"]
+        timeout_seconds = candidate_item["timeout_seconds"]
+
+        read_payload = _parse_tool_json(
+            _source_router_read(
+                url=url,
+                mode="auto" if use_agent_browser_profile else "static",
+                headless=True,
+                referer_mode="none",
+                referer_url="",
+                maxTextChars=_RESEARCH_SOURCE_READ_CHARS,
+                useAgentBrowserProfile=False,
+                tool_call_id=tool_call_id,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+        original_text = _safe_text(
+            read_payload.get("text")
+            or read_payload.get("markdown")
+            or read_payload.get("textPreview")
+        )
+        if cancel_event is not None and cancel_event.is_set():
+            if read_attempt_ledger is not None:
+                read_attempt_ledger.finish(read_claim, retryable=False)
+            return {"cancelled": True}
+
+        text = original_text
+        read_attempts: list[dict[str, Any]] = []
+        if read_payload.get("providerAttemptMatrix"):
+            for item in list(read_payload.get("providerAttemptMatrix") or [])[:6]:
+                if isinstance(item, dict):
+                    read_attempts.append(item)
+        elif read_payload.get("toolExecution"):
+            read_attempts.append({"provider": "builtin_scrapling", "status": "error", "failureClass": (read_payload.get("toolExecution") or {}).get("failureClass")})
+        else:
+            read_attempts.append({"provider": "builtin_scrapling", "status": "success" if read_payload.get("ok") else "error"})
+
+        needs_jina_fallback = bool(not read_payload.get("ok") or not text or _source_noise_reasons(text))
+        if needs_jina_fallback and _jina_api_key():
+            jina_payload = _read_with_jina(url)
+            read_attempts.append(
+                {
+                    "provider": "jina",
+                    "status": "success" if jina_payload.get("ok") else "error",
+                    "failureClass": jina_payload.get("failureClass"),
+                    "reason": jina_payload.get("reason"),
+                }
+            )
+            jina_text = _safe_text(jina_payload.get("text") or jina_payload.get("textPreview"))
+            if jina_payload.get("ok") and jina_text and not _source_noise_reasons(jina_text):
+                read_payload = {
+                    **read_payload,
+                    **jina_payload,
+                    "title": _safe_text(read_payload.get("title")) or _safe_text(jina_payload.get("title")),
+                    "providerAttemptMatrix": read_attempts,
+                }
+                original_text = jina_text
+                text = jina_text
+        elif needs_jina_fallback:
+            read_attempts.append(
+                {
+                    "provider": "jina",
+                    "status": "skipped",
+                    "failureClass": "credential_missing",
+                    "reason": "missing_env:JINA_API_KEY",
+                }
+            )
+
+        if cancel_event is not None and cancel_event.is_set():
+            if read_attempt_ledger is not None:
+                read_attempt_ledger.finish(read_claim, retryable=False)
+            return {"cancelled": True}
+
+        extraction_quality = read_payload.get("extractionQuality")
+        if not extraction_quality:
+            extraction_quality = "readable" if read_payload.get("ok") and text else "unreadable"
+        temporal = _source_temporal_evidence(read_payload, result)
+        original_content_chars = _research_original_content_chars(original_text, read_payload)
+        text = _research_source_excerpt(original_text, query, limit=_RESEARCH_SOURCE_CAPTURE_CHARS)
+        final_url = _safe_text(read_payload.get("finalUrl")) or url
+
+        if read_attempt_ledger is not None:
+            read_attempt_ledger.finish(
+                read_claim,
+                final_url=final_url,
+                retryable=bool(
+                    not (read_payload.get("ok") and text)
+                    and _research_read_failure_is_retryable(read_payload)
+                ),
+                succeeded=bool(read_payload.get("ok") and text),
+                cache_payload=(
+                    {
+                        "readPayload": read_payload,
+                        "originalText": original_text,
+                    }
+                    if read_payload.get("ok") and original_text
+                    else None
+                ),
+            )
+
+        return {
+            "result": result,
+            "url": url,
+            "final_url": final_url,
+            "read_payload": read_payload,
+            "read_attempts": read_attempts,
+            "original_text": original_text,
+            "text": text,
+            "extraction_quality": extraction_quality,
+            "temporal": temporal,
+            "original_content_chars": original_content_chars,
+        }
+
+    def _ingest_read_result(
+        *,
+        result: dict[str, Any],
+        url: str,
+        final_url: str,
+        read_payload: dict[str, Any],
+        read_attempts: list[dict[str, Any]],
+        text: str,
+        original_content_chars: int,
+        extraction_quality: str,
+        temporal: dict[str, Any],
+        cached_read: dict[str, Any] | None,
+    ) -> bool:
+        nonlocal accepted_evidence_count, accepted_read_count
+        final_host = _host(final_url)
+        final_site_domain_match = not site_domains or _host_matches_domains(final_host, site_domains)
+        if not final_site_domain_match and not result.get("siteConstraintRelaxed"):
+            return False
+        final_quality = _source_quality(
+            final_url,
+            allowed_domains=allowed_domains,
+            source_policy=source_policy,
+            title=_safe_text(read_payload.get("title") or result.get("title"))[:300],
+            snippet="\n".join(
+                part
+                for part in (_safe_text(result.get("snippet")), text[:600])
+                if part
+            ),
+            video_research=video_research,
+            question=query,
+        )
+        if result.get("siteConstraintRelaxed") and not final_site_domain_match:
+            final_quality = {
+                **final_quality,
+                "reasons": [
+                    *list(final_quality.get("reasons") or []),
+                    "domestic_mirror_for_unreachable_site_constraint",
+                ],
+                "siteConstraintRelaxed": True,
+                "siteConstraintDomains": list(result.get("siteConstraintDomains") or []),
+            }
+        result["sourceQualityHints"] = final_quality
+        if not _source_matches_intent(final_quality, result.get("sourceIntent")):
+            return False
+        result["finalUrl"] = final_url
+        fetched.append(
+            {
+                "url": url,
+                "finalUrl": final_url,
+                "ok": bool(read_payload.get("ok")),
+                "title": _safe_text(read_payload.get("title"))[:300],
+                "status": read_payload.get("status"),
+                "text": text,
+                "textPreview": text[:1200],
+                "contentChars": len(text),
+                "originalContentChars": original_content_chars,
+                "links": read_payload.get("links") or [],
+                "metadata": read_payload.get("metadata") if isinstance(read_payload.get("metadata"), dict) else {},
+                "retrievedAt": temporal.get("retrievedAt"),
+                "publishedAt": temporal.get("publishedAt"),
+                "updatedAt": temporal.get("updatedAt"),
+                "version": temporal.get("version"),
+                "temporalEvidence": temporal,
+                "omittedChars": max(0, original_content_chars - len(text)),
+                "evidenceSelection": "query_focused_excerpt",
+                "extractionQuality": extraction_quality,
+                "sourceCapability": read_payload.get("sourceCapability"),
+                "providerAttemptMatrix": read_payload.get("providerAttemptMatrix") or read_payload.get("attemptedProviders") or read_attempts,
+                "rawRef": read_payload.get("rawRef") or read_payload.get("detailRawRef"),
+                "missingContentReason": read_payload.get("missingContentReason"),
+                "warnings": read_payload.get("warnings") if isinstance(read_payload.get("warnings"), list) else [],
+                "failureClass": read_payload.get("failureClass") or (read_payload.get("toolExecution") or {}).get("failureClass"),
+                "toolExecution": read_payload.get("toolExecution"),
+                "readReuse": "shared_document_cache" if cached_read is not None else None,
+            }
+        )
+        if (
+            fetched[-1].get("ok") is True
+            and not fetched[-1].get("missingContentReason")
+            and bool(text)
+        ):
+            accepted_evidence_count += 1
+            if cached_read is None:
+                accepted_read_count += 1
+            return True
+        return False
+
+    result_idx = 0
+    num_results = len(top_results)
+
+    while result_idx < num_results:
+        if cancel_event is not None and cancel_event.is_set():
+            break
+        remaining_ms = remaining_shard_ms()
+        if remaining_ms < 1_000:
+            break
+        if (
+            len(fetched)
+            >= DEFAULT_RESEARCH_ACQUISITION_SCHEDULE.max_read_attempts_per_shard
+            or accepted_read_count
+            >= DEFAULT_RESEARCH_ACQUISITION_SCHEDULE.target_accepted_reads_per_shard
+        ):
+            break
+
+        needed_reads = max(
+            1,
+            DEFAULT_RESEARCH_ACQUISITION_SCHEDULE.target_accepted_reads_per_shard - accepted_read_count,
+        )
+        batch_limit = min(2, needed_reads)
+        network_candidates: list[dict[str, Any]] = []
+
+        while result_idx < num_results and len(network_candidates) < batch_limit:
             if cancel_event is not None and cancel_event.is_set():
                 break
             remaining_ms = remaining_shard_ms()
             if remaining_ms < 1_000:
                 break
             if (
-                len(fetched)
+                len(fetched) + len(network_candidates)
                 >= DEFAULT_RESEARCH_ACQUISITION_SCHEDULE.max_read_attempts_per_shard
                 or accepted_read_count
                 >= DEFAULT_RESEARCH_ACQUISITION_SCHEDULE.target_accepted_reads_per_shard
             ):
                 break
+
+            result = top_results[result_idx]
+            result_idx += 1
+
             url = _safe_text(result.get("url"))
-            if not url:
-                continue
-            if url not in read_eligible_urls:
+            if not url or url not in read_eligible_urls:
                 continue
             if (
                 read_attempt_ledger is not None
@@ -4720,6 +4950,7 @@ def _run_search_shard(
                 if source_host:
                     circuit_open_hosts.add(source_host)
                 continue
+
             source_identity = _research_document_identity(url, question=query)
             read_claim = ""
             cached_read: dict[str, Any] | None = None
@@ -4740,189 +4971,88 @@ def _run_search_shard(
                     if source_identity in claimed_read_urls:
                         continue
                     claimed_read_urls.add(source_identity)
+
             if cached_read is not None:
                 read_payload = dict(cached_read.get("readPayload") or {})
                 original_text = _safe_text(cached_read.get("originalText"))
-            else:
-                read_timeout_ms = min(
-                    _RESEARCH_SOURCE_READ_DEADLINE_MS,
-                    remaining_shard_ms(),
+                text = original_text
+                read_attempts = []
+                extraction_quality = read_payload.get("extractionQuality") or (
+                    "readable" if read_payload.get("ok") and text else "unreadable"
                 )
-                if read_timeout_ms < 1_000:
-                    if read_attempt_ledger is not None:
-                        read_attempt_ledger.finish(
-                            read_claim,
-                            retryable=True,
-                            record_host_failure=False,
-                        )
-                    break
-                read_payload = _parse_tool_json(
-                    _source_router_read(
-                        url=url,
-                        mode="auto" if use_agent_browser_profile else "static",
-                        headless=True,
-                        referer_mode="none",
-                        referer_url="",
-                        maxTextChars=_RESEARCH_SOURCE_READ_CHARS,
-                        # See the seed read above: profile use is opportunistic
-                        # for allowlisted hosts, never a blanket requirement for
-                        # every result URL in a research shard.
-                        useAgentBrowserProfile=False,
-                        tool_call_id=tool_call_id,
-                        timeout_seconds=read_timeout_ms / 1000.0,
-                    )
-                )
-                original_text = _safe_text(
-                    read_payload.get("text")
-                    or read_payload.get("markdown")
-                    or read_payload.get("textPreview")
-                )
-            if cancel_event is not None and cancel_event.is_set():
-                if read_attempt_ledger is not None:
-                    read_attempt_ledger.finish(read_claim, retryable=False)
-                break
-            text = original_text
-            read_attempts: list[dict[str, Any]] = []
-            if read_payload.get("providerAttemptMatrix"):
-                for item in list(read_payload.get("providerAttemptMatrix") or [])[:6]:
-                    if isinstance(item, dict):
-                        read_attempts.append(item)
-            elif read_payload.get("toolExecution"):
-                read_attempts.append({"provider": "builtin_scrapling", "status": "error", "failureClass": (read_payload.get("toolExecution") or {}).get("failureClass")})
-            else:
-                read_attempts.append({"provider": "builtin_scrapling", "status": "success" if read_payload.get("ok") else "error"})
-            needs_jina_fallback = bool(not read_payload.get("ok") or not text or _source_noise_reasons(text))
-            if needs_jina_fallback and _jina_api_key():
-                jina_payload = _read_with_jina(url)
-                read_attempts.append(
-                    {
-                        "provider": "jina",
-                        "status": "success" if jina_payload.get("ok") else "error",
-                        "failureClass": jina_payload.get("failureClass"),
-                        "reason": jina_payload.get("reason"),
-                    }
-                )
-                jina_text = _safe_text(jina_payload.get("text") or jina_payload.get("textPreview"))
-                if jina_payload.get("ok") and jina_text and not _source_noise_reasons(jina_text):
-                    read_payload = {
-                        **read_payload,
-                        **jina_payload,
-                        "title": _safe_text(read_payload.get("title")) or _safe_text(jina_payload.get("title")),
-                        "providerAttemptMatrix": read_attempts,
-                    }
-                    original_text = jina_text
-                    text = jina_text
-            elif needs_jina_fallback:
-                read_attempts.append(
-                    {
-                        "provider": "jina",
-                        "status": "skipped",
-                        "failureClass": "credential_missing",
-                        "reason": "missing_env:JINA_API_KEY",
-                    }
-                )
-            if cancel_event is not None and cancel_event.is_set():
-                if read_attempt_ledger is not None:
-                    read_attempt_ledger.finish(read_claim, retryable=False)
-                break
-            extraction_quality = read_payload.get("extractionQuality")
-            if not extraction_quality:
-                extraction_quality = "readable" if read_payload.get("ok") and text else "unreadable"
-            temporal = _source_temporal_evidence(read_payload, result)
-            original_content_chars = _research_original_content_chars(original_text, read_payload)
-            text = _research_source_excerpt(original_text, query, limit=_RESEARCH_SOURCE_CAPTURE_CHARS)
-            final_url = _safe_text(read_payload.get("finalUrl")) or url
-            if read_attempt_ledger is not None:
-                read_attempt_ledger.finish(
-                    read_claim,
+                temporal = _source_temporal_evidence(read_payload, result)
+                original_content_chars = _research_original_content_chars(original_text, read_payload)
+                text = _research_source_excerpt(original_text, query, limit=_RESEARCH_SOURCE_CAPTURE_CHARS)
+                final_url = _safe_text(read_payload.get("finalUrl")) or url
+                _ingest_read_result(
+                    result=result,
+                    url=url,
                     final_url=final_url,
-                    retryable=bool(
-                        not (read_payload.get("ok") and text)
-                        and _research_read_failure_is_retryable(read_payload)
-                    ),
-                    succeeded=bool(read_payload.get("ok") and text),
-                    cache_payload=(
-                        {
-                            "readPayload": read_payload,
-                            "originalText": original_text,
-                        }
-                        if read_payload.get("ok") and original_text and cached_read is None
-                        else None
-                    ),
+                    read_payload=read_payload,
+                    read_attempts=read_attempts,
+                    text=text,
+                    original_content_chars=original_content_chars,
+                    extraction_quality=extraction_quality,
+                    temporal=temporal,
+                    cached_read=cached_read,
                 )
-            final_host = _host(final_url)
-            final_site_domain_match = not site_domains or _host_matches_domains(final_host, site_domains)
-            if not final_site_domain_match and not result.get("siteConstraintRelaxed"):
+                if accepted_read_count >= DEFAULT_RESEARCH_ACQUISITION_SCHEDULE.target_accepted_reads_per_shard:
+                    break
                 continue
-            final_quality = _source_quality(
-                final_url,
-                allowed_domains=allowed_domains,
-                source_policy=source_policy,
-                title=_safe_text(read_payload.get("title") or result.get("title"))[:300],
-                snippet="\n".join(
-                    part
-                    for part in (_safe_text(result.get("snippet")), text[:600])
-                    if part
-                ),
-                video_research=video_research,
-                question=query,
+
+            read_timeout_ms = min(
+                _RESEARCH_SOURCE_READ_DEADLINE_MS,
+                remaining_shard_ms(),
             )
-            if result.get("siteConstraintRelaxed") and not final_site_domain_match:
-                final_quality = {
-                    **final_quality,
-                    "reasons": [
-                        *list(final_quality.get("reasons") or []),
-                        "domestic_mirror_for_unreachable_site_constraint",
-                    ],
-                    "siteConstraintRelaxed": True,
-                    "siteConstraintDomains": list(result.get("siteConstraintDomains") or []),
-                }
-            result["sourceQualityHints"] = final_quality
-            if not _source_matches_intent(final_quality, result.get("sourceIntent")):
-                continue
-            result["finalUrl"] = final_url
-            fetched.append(
+            if read_timeout_ms < 1_000:
+                if read_attempt_ledger is not None:
+                    read_attempt_ledger.finish(
+                        read_claim,
+                        retryable=True,
+                        record_host_failure=False,
+                    )
+                break
+
+            network_candidates.append(
                 {
+                    "result": result,
                     "url": url,
-                    "finalUrl": final_url,
-                    "ok": bool(read_payload.get("ok")),
-                    "title": _safe_text(read_payload.get("title"))[:300],
-                    "status": read_payload.get("status"),
-                    "text": text,
-                    "textPreview": text[:1200],
-                    "contentChars": len(text),
-                    "originalContentChars": original_content_chars,
-                    "links": read_payload.get("links") or [],
-                    "metadata": read_payload.get("metadata") if isinstance(read_payload.get("metadata"), dict) else {},
-                    "retrievedAt": temporal.get("retrievedAt"),
-                    "publishedAt": temporal.get("publishedAt"),
-                    "updatedAt": temporal.get("updatedAt"),
-                    "version": temporal.get("version"),
-                    "temporalEvidence": temporal,
-                    "omittedChars": max(0, original_content_chars - len(text)),
-                    "evidenceSelection": "query_focused_excerpt",
-                    "extractionQuality": extraction_quality,
-                    "sourceCapability": read_payload.get("sourceCapability"),
-                    "providerAttemptMatrix": read_payload.get("providerAttemptMatrix") or read_payload.get("attemptedProviders") or read_attempts,
-                    "rawRef": read_payload.get("rawRef") or read_payload.get("detailRawRef"),
-                    "missingContentReason": read_payload.get("missingContentReason"),
-                    "warnings": read_payload.get("warnings") if isinstance(read_payload.get("warnings"), list) else [],
-                    "failureClass": read_payload.get("failureClass") or (read_payload.get("toolExecution") or {}).get("failureClass"),
-                    "toolExecution": read_payload.get("toolExecution"),
-                    "readReuse": "shared_document_cache" if cached_read is not None else None,
+                    "read_claim": read_claim,
+                    "timeout_seconds": read_timeout_ms / 1000.0,
                 }
             )
-            # A cached projection gives this facet evidence but does not add a
-            # new independent document. Keep the shard's two-source network
-            # budget available for additional corroboration.
-            if (
-                fetched[-1].get("ok") is True
-                and not fetched[-1].get("missingContentReason")
-                and bool(text)
-            ):
-                accepted_evidence_count += 1
-                if cached_read is None:
-                    accepted_read_count += 1
+
+        if not network_candidates:
+            continue
+
+        results_to_ingest: list[dict[str, Any]] = []
+        if len(network_candidates) == 1:
+            out = _execute_network_read(network_candidates[0])
+            if not out.get("cancelled"):
+                results_to_ingest.append(out)
+        else:
+            with ThreadPoolExecutor(max_workers=len(network_candidates)) as executor:
+                futures = [executor.submit(_execute_network_read, c) for c in network_candidates]
+                for fut in futures:
+                    out = fut.result()
+                    if not out.get("cancelled"):
+                        results_to_ingest.append(out)
+
+        for item_data in results_to_ingest:
+            _ingest_read_result(
+                result=item_data["result"],
+                url=item_data["url"],
+                final_url=item_data["final_url"],
+                read_payload=item_data["read_payload"],
+                read_attempts=item_data["read_attempts"],
+                text=item_data["text"],
+                original_content_chars=item_data["original_content_chars"],
+                extraction_quality=item_data["extraction_quality"],
+                temporal=item_data["temporal"],
+                cached_read=None,
+            )
+            if accepted_read_count >= DEFAULT_RESEARCH_ACQUISITION_SCHEDULE.target_accepted_reads_per_shard:
+                break
     selected_provider = _safe_text(search_payload.get("provider")).lower()
     if read_attempt_ledger is not None and selected_provider and results:
         read_attempt_ledger.record_search_evidence_outcome(

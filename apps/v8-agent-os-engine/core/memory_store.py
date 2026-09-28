@@ -18,6 +18,7 @@ import os
 import time
 import hashlib
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Tuple
 
@@ -1655,8 +1656,12 @@ class MemoryStore:
             "rerank_skipped_reason": "",
         }
 
-        from core.runtime.startup_profile import optional_capability_enabled
-        if use_vector and optional_capability_enabled("vector_memory"):
+        def _fetch_vector_channel():
+            vector_candidates: list[dict[str, Any]] = []
+            vector_diags: dict[str, Any] = {}
+            from core.runtime.startup_profile import optional_capability_enabled
+            if not (use_vector and optional_capability_enabled("vector_memory")):
+                return vector_candidates, vector_diags
             try:
                 from core.vector_store import get_vector_store
 
@@ -1671,8 +1676,8 @@ class MemoryStore:
                 for channel_rank, result in enumerate(vector_results, start=1):
                     score_available = bool(result.get("score_available", result.get("relevance_score") is not None))
                     if not score_available:
-                        diagnostics["vector_degraded"] = True
-                        diagnostics.setdefault("vector_degraded_reasons", []).append(
+                        vector_diags["vector_degraded"] = True
+                        vector_diags.setdefault("vector_degraded_reasons", []).append(
                             str(result.get("score_source") or "missing_score")
                         )
                         continue
@@ -1697,8 +1702,7 @@ class MemoryStore:
                     vector_candidate_count += 1
                     if result.get("score_source"):
                         vector_score_sources.add(str(result["score_source"]))
-                    self._merge_recall_candidate(
-                        seed_candidates,
+                    vector_candidates.append(
                         {
                             "id": final_id,
                             "fact": final_fact,
@@ -1712,22 +1716,24 @@ class MemoryStore:
                             "score_source": result.get("score_source") or "vector",
                             "lineage_id": result.get("metadata", {}).get("lineage_id"),
                             "revision_no": result.get("metadata", {}).get("revision_no"),
-                        },
+                        }
                     )
-                diagnostics["channel_candidate_counts"]["vector"] = vector_candidate_count
+                vector_diags["vector_candidate_count"] = vector_candidate_count
                 if vector_score_sources:
-                    diagnostics["vector_score_sources"] = sorted(vector_score_sources)
+                    vector_diags["vector_score_sources"] = sorted(vector_score_sources)
             except Exception as exc:
-                diagnostics["vector_error"] = str(exc)
-                diagnostics["vector_degraded"] = True
+                vector_diags["vector_error"] = str(exc)
+                vector_diags["vector_degraded"] = True
                 logger.warning(f"[MemoryStore] Vector search error in unified_recall: {exc}")
+            return vector_candidates, vector_diags
 
-        if use_fts:
+        def _fetch_fts_channel():
+            fts_candidates: list[dict[str, Any]] = []
+            fts_diags: dict[str, Any] = {}
+            if not use_fts:
+                return fts_candidates, fts_diags
             try:
                 fts_limit = max(effective_limit * 4, 8)
-                # Query every allowed scope before the per-channel limit. A
-                # workspace query may still use global memories as fallback;
-                # excluding global here would silently drop that contract.
                 fts_query_scopes = list(dict.fromkeys(scope_chain)) or ["global"]
                 fts_by_id: Dict[str, Dict[str, Any]] = {}
                 for query_scope in fts_query_scopes:
@@ -1792,8 +1798,7 @@ class MemoryStore:
                     if not self._is_injectable_knowledge(str(final_id or "")):
                         continue
                     fts_candidate_count += 1
-                    self._merge_recall_candidate(
-                        seed_candidates,
+                    fts_candidates.append(
                         {
                             "id": final_id,
                             "fact": final_fact,
@@ -1812,14 +1817,46 @@ class MemoryStore:
                             "evidence_refs": result.get("evidence_refs_json"),
                             "lineage_id": result.get("lineage_id"),
                             "revision_no": result.get("revision_no"),
-                        },
+                        }
                     )
-                diagnostics["channel_candidate_counts"]["fts5"] = fts_candidate_count
-                diagnostics["fts_query_scopes"] = list(fts_query_scopes)
+                fts_diags["fts_candidate_count"] = fts_candidate_count
+                fts_diags["fts_query_scopes"] = list(fts_query_scopes)
             except Exception as exc:
-                diagnostics["fts5_error"] = str(exc)
-                diagnostics["fts5_degraded"] = True
+                fts_diags["fts5_error"] = str(exc)
+                fts_diags["fts5_degraded"] = True
                 logger.warning(f"[MemoryStore] FTS5 search error in unified_recall: {exc}")
+            return fts_candidates, fts_diags
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            fut_vec = executor.submit(_fetch_vector_channel)
+            fut_fts = executor.submit(_fetch_fts_channel)
+            vector_candidates, vector_diags = fut_vec.result()
+            fts_candidates, fts_diags = fut_fts.result()
+
+        if "vector_error" in vector_diags:
+            diagnostics["vector_error"] = vector_diags["vector_error"]
+        if vector_diags.get("vector_degraded"):
+            diagnostics["vector_degraded"] = True
+        if "vector_degraded_reasons" in vector_diags:
+            diagnostics.setdefault("vector_degraded_reasons", []).extend(vector_diags["vector_degraded_reasons"])
+        if "vector_score_sources" in vector_diags:
+            diagnostics["vector_score_sources"] = vector_diags["vector_score_sources"]
+        if "vector_candidate_count" in vector_diags:
+            diagnostics["channel_candidate_counts"]["vector"] = vector_diags["vector_candidate_count"]
+
+        if "fts5_error" in fts_diags:
+            diagnostics["fts5_error"] = fts_diags["fts5_error"]
+        if fts_diags.get("fts5_degraded"):
+            diagnostics["fts5_degraded"] = True
+        if "fts_candidate_count" in fts_diags:
+            diagnostics["channel_candidate_counts"]["fts5"] = fts_diags["fts_candidate_count"]
+        if "fts_query_scopes" in fts_diags:
+            diagnostics["fts_query_scopes"] = fts_diags["fts_query_scopes"]
+
+        for cand in vector_candidates:
+            self._merge_recall_candidate(seed_candidates, cand)
+        for cand in fts_candidates:
+            self._merge_recall_candidate(seed_candidates, cand)
 
         self._apply_recall_fusion(
             seed_candidates,

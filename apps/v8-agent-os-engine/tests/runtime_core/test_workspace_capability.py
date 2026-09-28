@@ -598,6 +598,7 @@ def test_write_native_file_records_a_session_bound_artifact(tmp_path, monkeypatc
     monkeypatch.setattr(workspace_file_module.safety_guardian, "observe_post_action", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(workspace_file_module, "_enforce_safety_decision", lambda *_args, **_kwargs: (True, None))
     monkeypatch.setattr(workspace_file_module, "mark_workspace_state_stale", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("core.runtime_episode_control.assert_episode_execution_allowed", lambda *_args, **_kwargs: None)
 
     with bind_runtime_context(
         runtime_kind="chat",

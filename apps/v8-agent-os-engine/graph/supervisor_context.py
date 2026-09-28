@@ -606,6 +606,12 @@ def _render_engineering_context(state: dict) -> tuple[str, list[dict[str, object
             suppressed.append("memory map")
         if suppressed:
             lines.append("Suppressed in engineering mode: " + ", ".join(suppressed) + ". Workflow hints remain as checklist/bias.")
+    lines.append(
+        "LSP principles:\n"
+        "- Language Server Protocol (LSP) diagnostics run on-demand to safeguard code correctness.\n"
+        "- If an LSP server is reported missing or inactive for your language, install it yourself via `run_system_command` to ~/.v8-agent-os/cache/lsp before proceeding.\n"
+        "- If default package registry fails, inspect stderr and retry with explicit --registry mirror. Never invent syntax without verification."
+    )
     lines.append("--------------------------------")
     diagnostics = [{
         "source": "engineering_context_pack",

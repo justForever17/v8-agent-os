@@ -713,6 +713,14 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
             version = _content_version(read_bytes)
             _record_file_read(runtime_context, target_path, version=version)
             header += f"Content version: {version}\nFile bytes: {len(read_bytes)}\n"
+            try:
+                from runtimes.engineering.lsp.lsp_manager import LSPManager
+                lang = LSPManager.detect_language(str(target_path))
+                if lang:
+                    status = LSPManager.get_instance().probe_runner.registry.get_status(lang)
+                    header += f"LSP Status: {lang}={status.value}\n"
+            except Exception:
+                pass
 
         return header + content + footer
 
@@ -1014,22 +1022,44 @@ def write_native_file(
             target_path,
             operation="append" if append else write_reason,
         )
+        lsp_feedback = ""
+        try:
+            from runtimes.engineering.lsp.lsp_manager import LSPManager
+            from runtimes.engineering.lsp.lsp_protocol import LSPStatus
+            lang = LSPManager.detect_language(str(target_path))
+            if lang:
+                mgr = LSPManager.get_instance()
+                diff = mgr.on_file_saved_sync(str(target_path), final_content, wait_ms=100, timeout=1.5)
+                if diff and diff.new_errors:
+                    lsp_feedback = f"\n\n[LSP Diagnostics - Incremental Errors Introduced]\n{diff.formatted_feedback}"
+                elif not diff:
+                    status = mgr.probe_runner.registry.get_status(lang)
+                    if status in (LSPStatus.MISSING, LSPStatus.UNINSTALLED):
+                        guidance = mgr.probe_runner.get_install_guidance(lang)
+                        if guidance:
+                            lsp_feedback = f"\n\n{guidance}"
+        except Exception:
+            pass
+
         if patch_proof:
+            payload = {
+                "ok": True,
+                "kind": "scoped_file_patch",
+                "summary": f"已按局部锚点替换文件：{target_path}",
+                "path": str(target_path),
+                "charsWritten": len(write_content),
+                "contentVersion": written_version,
+                "proof": patch_proof,
+            }
+            if lsp_feedback:
+                payload["lspDiagnostics"] = lsp_feedback.strip()
             return json.dumps(
-                {
-                    "ok": True,
-                    "kind": "scoped_file_patch",
-                    "summary": f"已按局部锚点替换文件：{target_path}",
-                    "path": str(target_path),
-                    "charsWritten": len(write_content),
-                    "contentVersion": written_version,
-                    "proof": patch_proof,
-                },
+                payload,
                 ensure_ascii=False,
                 indent=2,
             )
         action = "Appended" if append else "Created/Overwritten"
-        return f"Successfully {action} file: {target_path} ({len(write_content)} chars written)\nContent version: {written_version}; same-actor consecutive edits can reuse this receipt."
+        return f"Successfully {action} file: {target_path} ({len(write_content)} chars written)\nContent version: {written_version}; same-actor consecutive edits can reuse this receipt.{lsp_feedback}"
     except Exception as e:
         _raise_runtime_governance_exception_if_needed(e)
         return f"Error writing file '{path}': {str(e)}"

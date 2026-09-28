@@ -93,3 +93,40 @@ async def refresh_engineering_proof_entry(payload: dict):
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/lsp/status")
+async def get_engineering_lsp_status():
+    """Retrieve the live status and traffic light indicator for all language servers."""
+    try:
+        from runtimes.engineering.lsp.lsp_probe_runner import lsp_probe_runner
+
+        statuses = lsp_probe_runner.registry.get_summary()
+        indicator = lsp_probe_runner.registry.get_indicator()
+        return {
+            "statuses": statuses,
+            "indicator": indicator,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/lsp/probe")
+async def probe_engineering_lsp(
+    workspace_root: Optional[str] = Query(default=None, alias="workspaceRoot"),
+):
+    """Probe the host/workspace toolchain candidates and update live status registry."""
+    try:
+        from runtimes.engineering.lsp.lsp_probe_runner import lsp_probe_runner
+
+        probe_result = lsp_probe_runner.probe_workspace(workspace_root or "")
+        statuses = lsp_probe_runner.registry.get_summary()
+        indicator = lsp_probe_runner.registry.get_indicator()
+        return {
+            "probe": probe_result,
+            "statuses": statuses,
+            "indicator": indicator,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+

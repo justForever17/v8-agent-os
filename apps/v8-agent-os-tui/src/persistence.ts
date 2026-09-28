@@ -2,12 +2,12 @@ import { mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync } from 'n
 import path from 'node:path';
 import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
-import { normalizeLocale, type Locale } from './locale.js';
+import { normalizeLocale, detectSystemLanguage, type Locale } from './locale.js';
 import { normalizeTheme, type ThemeName } from './theme.js';
 export type Draft = { text: string; attachments: any[]; nextText?: string; unknown?: { clientMessageId: string; startedAt: string } };
 export type ScrollAnchor = { messageId: string; offset: number; lineBreaks?: number; following: boolean };
 export type ViewState = { instanceId: string; sessionId: string; drafts: Record<string, Draft>; sidebar: boolean; detail: boolean; workspace: string; scroll: Record<string, ScrollAnchor>; retryRequests: Record<string, { requestedAt: string; nextRunId?: string }>; locale: Locale; theme: ThemeName };
-export const defaultView = (): ViewState => ({ instanceId: '', sessionId: '', drafts: {}, sidebar: false, detail: false, workspace: '', scroll: {}, retryRequests: {}, locale: normalizeLocale(process.env.V8OS_LANG || process.env.LC_ALL || process.env.LANG), theme: normalizeTheme(process.env.V8OS_THEME) });
+export const defaultView = (): ViewState => ({ instanceId: '', sessionId: '', drafts: {}, sidebar: false, detail: false, workspace: '', scroll: {}, retryRequests: {}, locale: detectSystemLanguage(), theme: normalizeTheme(process.env.V8OS_THEME) });
 export class ViewStore {
   private instanceId = '';
   constructor(private readonly root = process.env.V8_AGENT_OS_HOME || path.join(os.homedir(), '.v8-agent-os'), instanceId = '') { this.instanceId = instanceId; }

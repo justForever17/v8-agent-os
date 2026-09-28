@@ -581,6 +581,22 @@ export class Surface {
         await this.modelsHub();
         return;
       }
+      if (command === '/fork' || command === '/branch') {
+        this.client.setDraft('');
+        this.input = editor('');
+        if (args) {
+          await this.client.branch(args);
+        } else {
+          this.forkDialog();
+        }
+        return;
+      }
+      if (command === '/compress') {
+        this.client.setDraft('');
+        this.input = editor('');
+        await this.compressContextAction();
+        return;
+      }
       if (command === '/new' || command === '/clear') {
         this.client.setDraft('');
         this.input = editor('');
@@ -630,12 +646,98 @@ export class Surface {
         if (approvalAction) await approvalAction.run();
         return;
       }
+      if (command === '/language' || command === '/lang') {
+        this.client.setDraft('');
+        this.input = editor('');
+        const target = args.toLowerCase();
+        if (target.startsWith('en') || target === '2') {
+          this.setLocale('en-US');
+        } else if (target.startsWith('zh') || target === 'cn' || target === '1') {
+          this.setLocale('zh-CN');
+        } else {
+          const action = this.commands().find(c => c.command === 'language');
+          if (action) await action.run();
+        }
+        return;
+      }
+      if (command === '/diff') {
+        this.client.setDraft('');
+        this.input = editor('');
+        await this.diffAction();
+        return;
+      }
+      if (command === '/rewind') {
+        this.client.setDraft('');
+        this.input = editor('');
+        await this.rewindAction();
+        return;
+      }
+      if (command === '/restore') {
+        this.client.setDraft('');
+        this.input = editor('');
+        await this.restoreAction();
+        return;
+      }
+      if (command === '/init') {
+        this.client.setDraft('');
+        this.input = editor('');
+        await this.initAction();
+        return;
+      }
+      if (command === '/theme') {
+        this.client.setDraft('');
+        this.input = editor('');
+        const target = args.toLowerCase();
+        if (target && themeNames.includes(target as ThemeName)) {
+          this.client.view.theme = target as ThemeName;
+          this.client.save(true);
+          this.client.notice = `视觉主题已切换：${target}`;
+          this.changed();
+        } else {
+          const action = this.commands().find(c => c.command === 'theme');
+          if (action) await action.run();
+        }
+        return;
+      }
+      if (command === '/setup') {
+        this.client.setDraft('');
+        this.input = editor('');
+        await this.setup();
+        return;
+      }
+      if (command === '/task') {
+        this.client.setDraft('');
+        this.input = editor('');
+        await this.details();
+        return;
+      }
       if (command === '/exit' || command === '/quit') {
         this.client.setDraft('');
         this.input = editor('');
         this.onExit();
         return;
       }
+      const bareCmd = command.slice(1);
+      const matchedAction = this.commands().find(c => c.command === bareCmd);
+      if (matchedAction) {
+        this.client.setDraft('');
+        this.input = editor('');
+        await matchedAction.run();
+        return;
+      }
+      this.client.notice = this.client.view.locale === 'en-US'
+        ? `Unknown command: ${command}. Type / or press Ctrl+P for available commands.`
+        : `未知命令：${command}。输入 / 或按 Ctrl+P 查看可用操作。`;
+      this.changed();
+      return;
+    }
+    const modelReady = Boolean(this.client.modelReady || this.client.snapshot?.modelReady);
+    if (!modelReady) {
+      this.client.notice = this.client.view.locale === 'en-US'
+        ? 'Please configure a model first (Press F3 or run /setup).'
+        : '请先配置模型（按 F3 或输入 /setup 打开配置）。';
+      this.changed();
+      return;
     }
     const atData = await this.resolveStructuredAtMentions();
     await this.attachAtFiles();
@@ -713,6 +815,207 @@ export class Surface {
   }
   sessionResults() { this.open('会话列表', [], [{ label: '返回对话', run: () => this.close(true) }, ...this.sessionActions()]); }
   async newSession() { await this.client.attach(''); this.input = editor(this.client.draft.text); this.following = true; await this.close(true); }
+  forkDialog(title = '') {
+    const currentId = this.client.view.sessionId;
+    if (!currentId) {
+      this.client.notice = '当前为新会话，尚未产生历史记录，无需分叉。';
+      this.changed();
+      return;
+    }
+    this.form('分叉会话分支 / Fork', [
+      { key: 'title', label: '分支会话名称（选填，留空自动生成）', value: title },
+    ], async v => {
+      await this.client.branch(v.title);
+      await this.close(true);
+    }, [
+      `当前会话：${currentId.slice(0, 8)}...`,
+      '分叉将继承当前会话的所有历史记录与上下文事实，并开启新的独立探索分支。',
+      '分叉后不会影响原会话的历史与检查点。',
+    ]);
+  }
+  async compressContextAction() {
+    const info = await this.client.compressContext();
+    this.open('上下文用量与压缩 / Compress', [
+      info.summary,
+      '',
+      '说明：当前会话达到软压缩比例（默认 90%）时将自动触发摘要压缩；',
+      '可在设置中调整上下文窗口、触发比例和保留轮数。',
+    ], [
+      { label: '返回对话', run: () => this.close(true) },
+      { label: '调整压缩策略', run: () => this.contextSettings() },
+    ]);
+  }
+
+  async diffAction() {
+    const diffResult = await this.client.getWorkspaceDiff();
+    if (diffResult.clean) {
+      const noticeLine = diffResult.error
+        ? `未检测到有效 Git 差异（${diffResult.error}）`
+        : '当前工作区干净，没有未提交的代码修改。';
+      this.open('工作区代码修改 / Diff', [
+        noticeLine,
+        `工作区：${this.client.workspace || '默认工作区'}`,
+      ], [{ label: '返回对话', run: () => this.close(true) }]);
+      return;
+    }
+
+    const lines: string[] = [
+      `工作区：${this.client.workspace || '默认工作区'}`,
+      `共检测到 ${diffResult.files.length} 个已修改文件 (+${diffResult.totalAdditions} -${diffResult.totalDeletions})` +
+        (diffResult.untrackedFiles.length ? ` · ${diffResult.untrackedFiles.length} 个未跟踪新文件` : ''),
+      '',
+    ];
+
+    if (diffResult.untrackedFiles.length > 0) {
+      lines.push('未跟踪新文件：');
+      for (const f of diffResult.untrackedFiles.slice(0, 5)) {
+        lines.push(`  ? ${f}`);
+      }
+      if (diffResult.untrackedFiles.length > 5) {
+        lines.push(`  ... 还有 ${diffResult.untrackedFiles.length - 5} 个`);
+      }
+      lines.push('');
+    }
+
+    lines.push('已修改文件列表与 Diff 摘要：');
+    for (const f of diffResult.files) {
+      lines.push(`● ${f.path}  (+${f.additions} -${f.deletions})`);
+      for (const chunk of f.chunks.slice(0, 2)) {
+        lines.push(`  ${chunk.header}`);
+        for (const line of chunk.lines.slice(0, 6)) {
+          lines.push(`    ${line}`);
+        }
+        if (chunk.lines.length > 6) {
+          lines.push(`    ... (${chunk.lines.length - 6} 行省略)`);
+        }
+      }
+    }
+
+    const actions: Action[] = [
+      { label: '返回对话', run: () => this.close(true) },
+      { label: '刷新 Diff', run: () => this.diffAction() },
+    ];
+
+    for (const f of diffResult.files.slice(0, 10)) {
+      actions.push({
+        label: `查看 ${path.basename(f.path)} 完整 Patch`,
+        run: () => {
+          const fileLines: string[] = [
+            `文件：${f.path}`,
+            `变动：+${f.additions} -${f.deletions}`,
+            '',
+            ...f.rawDiff.split(/\r?\n/).slice(0, 120),
+          ];
+          if (f.rawDiff.split(/\r?\n/).length > 120) {
+            fileLines.push('... (后续内容已截断)');
+          }
+          this.open(`Diff · ${path.basename(f.path)}`, fileLines, [
+            { label: '返回文件列表', run: () => this.diffAction() },
+            { label: '返回对话', run: () => this.close(true) },
+          ]);
+        },
+      });
+    }
+
+    this.open('工作区代码修改 / Diff', lines, actions);
+  }
+
+  async rewindAction() {
+    const sessionId = this.client.view.sessionId;
+    if (!sessionId) {
+      this.client.notice = '当前为新会话，尚未产生可回退的对话。';
+      this.changed();
+      return;
+    }
+    this.confirm(
+      '回退上一轮对话 / Rewind',
+      [
+        `当前会话：${sessionId.slice(0, 8)}...`,
+        '回滚将截断当前会话的最后一轮问答，并将该轮输入内容恢复到草稿输入框。',
+        '此操作会使 Engine 终止或废弃该轮产生的文件与运行记录。',
+      ],
+      '确认回退',
+      async () => {
+        try {
+          const result = await this.client.rewindLastTurn();
+          this.input = editor(result.text);
+          await this.close(true);
+        } catch (err: any) {
+          this.client.notice = `回退失败：${err?.message || err}`;
+          this.changed();
+        }
+      }
+    );
+  }
+
+  async restoreAction() {
+    const sessionId = this.client.view.sessionId;
+    if (!sessionId) {
+      this.client.notice = '需要先进入一个会话才能查看历史版本恢复。';
+      this.changed();
+      return;
+    }
+    const revisions = await this.client.listRevisions();
+    if (!revisions || revisions.length === 0) {
+      this.open('恢复历史版本 / Restore', [
+        `会话：${sessionId.slice(0, 8)}...`,
+        '当前会话暂无可直接还原的消息快照历史。',
+        '提示：使用 /branch 可随时基于历史轮次分叉出新的分支继续探索。',
+      ], [
+        { label: '返回对话', run: () => this.close(true) },
+        { label: '分叉分支 /branch', run: () => this.forkDialog() },
+      ]);
+      return;
+    }
+
+    const actions: Action[] = [
+      { label: '返回对话', run: () => this.close(true) },
+    ];
+
+    for (const rev of revisions) {
+      actions.push({
+        label: `版本 v${rev.messageVersion} · ${rev.createdAt || '历史'}`,
+        run: async () => {
+          await this.client.restoreRevision(rev.messageId, rev.revisionId);
+          await this.close(true);
+        },
+      });
+    }
+
+    this.open('恢复历史版本 / Restore', [
+      `会话：${sessionId.slice(0, 8)}...`,
+      `共检测到 ${revisions.length} 个可恢复的历史版本快照：`,
+      '选择版本后将恢复对应消息内容并刷新上下文。',
+    ], actions);
+  }
+
+  async initAction() {
+    const cwd = this.client.workspace || process.cwd();
+    this.confirm(
+      '初始化项目契约 / Init',
+      [
+        `目标目录：${cwd}`,
+        '将智能探测该工作区的依赖栈（Node/Python/Rust/Go等）并生成标准 AGENTS.md 协作规范契约。',
+        '若已存在旧 AGENTS.md，将先自动备份为 AGENTS.md.bak。',
+      ],
+      '确认初始化',
+      async () => {
+        try {
+          const res = await this.client.initProjectContract();
+          this.open('初始化完成 / Init', [
+            res.summary,
+            `已写入：${res.path}`,
+            '',
+            '规范已就绪，所有 Agent 协同与执行将遵循 Supervisor First 契约。',
+          ], [{ label: '返回对话', run: () => this.close(true) }]);
+        } catch (err: any) {
+          this.client.notice = `初始化失败：${err?.message || err}`;
+          this.changed();
+        }
+      }
+    );
+  }
+
   async details() {
     await this.client.refreshSnapshot();
     const s = this.client.snapshot;
@@ -905,9 +1208,13 @@ export class Surface {
       ], async v => {
         try { await this.client.api('/v1/models/connect', { method: 'POST', body: v, timeoutMs: 60000 }); }
         finally { v.apiKey = ''; if (this.page?.fields) for (const f of this.page.fields) if (f.secret) f.value = ''; this.formEditor = editor(); }
+        await this.client.refreshModelReadiness();
         await this.models();
       }) },
-      { label: '为角色选择模型', run: () => this.form('角色模型', [{ key: 'role', label: '角色 ID（上方角色列表）', value: 'supervisor' }, { key: 'modelRef', label: '模型引用', value: '' }], async v => this.prepare('/v1/config-broker/roles/prepare', v, '/v1/config-broker/roles')) },
+      { label: '为角色选择模型', run: () => this.form('角色模型', [{ key: 'role', label: '角色 ID（上方角色列表）', value: 'supervisor' }, { key: 'modelRef', label: '模型引用', value: '' }], async v => {
+        await this.prepare('/v1/config-broker/roles/prepare', v, '/v1/config-broker/roles');
+        await this.client.refreshModelReadiness();
+      }) },
       { label: '浏览已安装模型', run: () => this.readPage('模型目录', '/v1/config-broker/models?limit=50') },
       { label: '累计 Token / 费用预算', run: () => this.budgets() },
       { label: '近 24 小时用量', run: () => this.modelUsage() },
@@ -1229,6 +1536,13 @@ export class Surface {
     { command: 'model', tier: 'daily', description: '模型管理中心、向导式注册与角色选项卡分配', label: '模型管理 /model', navigation: true, run: () => this.modelsHub() },
     { command: 'resume', tier: 'daily', description: '选择并恢复历史会话', label: '恢复会话 /resume', navigation: true, run: () => this.sessions() },
     { command: 'new', tier: 'daily', description: '保留当前草稿，进入新会话', label: '新建会话 /new', run: () => this.newSession() },
+    { command: 'branch', tier: 'daily', description: '将当前会话分叉为独立分支', label: '分叉分支 /branch', navigation: true, run: () => this.forkDialog() },
+    { command: 'fork', tier: 'daily', description: '将当前会话分叉为独立分支', label: '分叉分支 /fork', navigation: true, run: () => this.forkDialog() },
+    { command: 'compress', tier: 'daily', description: '查看并手动触发上下文压缩', label: '上下文压缩 /compress', run: () => this.compressContextAction() },
+    { command: 'diff', tier: 'daily', description: '查看工作区代码修改与 Unified Diff', label: '工作区修改 /diff', navigation: true, run: () => this.diffAction() },
+    { command: 'rewind', tier: 'daily', description: '回退上一轮对话并恢复草稿', label: '回滚轮次 /rewind', run: () => this.rewindAction() },
+    { command: 'restore', tier: 'daily', description: '从历史快照或分支恢复消息', label: '恢复版本 /restore', navigation: true, run: () => this.restoreAction() },
+    { command: 'init', tier: 'daily', description: '探测工作区依赖并生成 AGENTS.md', label: '初始化规范 /init', run: () => this.initAction() },
     { command: 'clear', tier: 'daily', description: '清空当前上下文，进入全新会话', label: '清空会话 /clear', run: () => this.newSession() },
     { command: 'workspace', tier: 'daily', description: '选择并信任项目工作区', label: '工作区管理 /workspace', navigation: true, run: () => this.workspaceManager() },
     { command: 'mcp', tier: 'daily', description: '管理 MCP 扩展服务与工具', label: 'MCP 扩展 /mcp', navigation: true, run: () => this.extensions() },
@@ -1253,12 +1567,13 @@ export class Surface {
     { command: 'sidebar', tier: 'view', description: '显示或隐藏会话概览', label: '切换会话侧栏', navigation: true, run: () => { this.client.view.sidebar = !this.client.view.sidebar; this.client.save(); this.page = null; } },
     { command: 'details', tier: 'view', description: '显示或隐藏任务概览', label: '切换任务侧栏', navigation: true, run: () => { this.client.view.detail = !this.client.view.detail; this.client.save(); this.page = null; } },
     { command: 'exit', tier: 'view', description: '退出终端并释放前台 Engine', label: '退出终端', navigation: true, run: () => { this.invalidateNavigation(); this.onExit(); } },
-    { command: 'language', tier: 'advanced', description: '切换并持久化 TUI 界面语言', label: '语言 / Language', navigation: true, run: () => this.open('语言 / Language', ['选择后立即保存到本机 TUI 视图；不会修改 Engine 或其他客户端。'], [
+    { command: 'language', tier: 'daily', description: '切换并持久化 TUI 界面语言', label: '语言 / Language', navigation: true, run: () => this.open('语言 / Language', ['选择后立即保存到本机 TUI 视图；不会修改 Engine 或其他客户端。'], [
       { label: '中文（简体）', run: () => { this.setLocale('zh-CN'); this.page = null; } },
       { label: 'English', run: () => { this.setLocale('en-US'); this.page = null; } },
       { label: '返回对话', run: () => this.close(true) },
     ]) },
-    { command: 'theme', tier: 'advanced', description: '切换本地终端视觉主题', label: '视觉主题 / Theme', navigation: true, run: () => this.open('视觉主题 / Theme', ['主题只影响当前 TUI；不会修改 Engine、Web 或 Phone 配置。NO_COLOR 会强制无色模式。', `当前：${this.client.view.theme}`], [
+    { command: 'lang', tier: 'daily', description: '切换并持久化 TUI 界面语言', label: '语言 / Language', navigation: true, run: () => this.commands().find(c => c.command === 'language')?.run() },
+    { command: 'theme', tier: 'daily', description: '切换本地终端视觉主题', label: '视觉主题 / Theme', navigation: true, run: () => this.open('视觉主题 / Theme', ['主题只影响当前 TUI；不会修改 Engine、Web 或 Phone 配置。NO_COLOR 会强制无色模式。', `当前：${this.client.view.theme}`], [
       ...themeNames.map((theme: ThemeName) => ({ label: `${theme}${theme === this.client.view.theme ? ' · 当前' : ''}`, run: () => { this.client.view.theme = theme; this.client.save(true); this.client.notice = `视觉主题已切换：${theme}`; this.page = null; this.changed(); } })),
       { label: '返回对话', run: () => this.close(true) },
     ]) },

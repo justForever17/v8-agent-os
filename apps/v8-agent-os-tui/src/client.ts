@@ -1,7 +1,10 @@
 import { engineJson, engineUpload, engineTargetOrigin } from '../../v8-agent-os-cli/src/engine_client.mjs';
 import { randomUUID } from 'node:crypto';
 import { openAsBlob } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { stat, readFile, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const execFileAsync = promisify(execFile);
 import path from 'node:path';
 import { normalizeSessionRuntimeEvent } from '../../../packages/session-realtime/src/event-normalizer.js';
 import { normalizeAuthoritativeSessionHistoryList } from '../../../packages/session-realtime/src/history.js';
@@ -17,6 +20,27 @@ export type Api = (route: string, options?: any) => Promise<any>;
 // accidentally target the enclosing session when deciding an inbox item.
 export const idOf = (item: any) => String(item?.id || item?.interactionId || item?.interaction_id || item?.approvalId || item?.approval_id || item?.sessionId || item?.session_id || item?.runId || item?.run_id || '');
 export const pending = (item: any) => ['pending', 'waiting', 'open', 'requested'].includes(String(item?.status || 'pending'));
+
+export interface WorkspaceDiffFile {
+  path: string;
+  additions: number;
+  deletions: number;
+  chunks: Array<{
+    header: string;
+    lines: string[];
+  }>;
+  rawDiff: string;
+}
+
+export interface WorkspaceDiffResult {
+  clean: boolean;
+  files: WorkspaceDiffFile[];
+  totalAdditions: number;
+  totalDeletions: number;
+  untrackedFiles: string[];
+  error?: string;
+}
+
 export class Client {
   view: ViewState; messages: any[] = []; snapshot: any = {}; instance: any = {};
   sessions: any[] = []; sessionCursor = ''; page: any = {}; syncCursor = ''; seq = 0;
@@ -44,6 +68,17 @@ export class Client {
     this.changed();
   }
   private transportAbort = new AbortController();
+  private engineReadyPromise?: Promise<any>;
+  setEngineReadyPromise(promise: Promise<any>) {
+    this.engineReadyPromise = promise.then(async () => {
+      await this.initialize();
+    });
+  }
+  async waitForEngineReady() {
+    if (this.engineReadyPromise) {
+      await this.engineReadyPromise;
+    }
+  }
   constructor(readonly store = new ViewStore(), readonly transport: Api = engineJson) { this.view = store.read(); }
   api: Api = async (route, options = {}) => {
     if (options.method && options.method !== 'GET' && !this.instance.instanceId) return Promise.reject(new Error('请先连接并核对 Engine 实例。'));
@@ -79,7 +114,7 @@ export class Client {
   get ownerReady() { return Boolean(this.owner?.sessionIdentifier); }
   get ownerName() { return String(this.owner?.name || this.owner?.login || '本机 owner'); }
   get run() { return this.snapshot.currentRun || {}; }
-  get workspace() { return this.view.sessionId ? this.sessionWorkspace : this.view.workspace; }
+  get workspace() { return (this.view.sessionId && this.sessionWorkspace) ? this.sessionWorkspace : this.view.workspace; }
   get active() { return isActiveRunStatus(this.run.status || this.snapshot.runtimeStatus); }
   get inbox() {
     return [...(this.snapshot.approvals || []).map((x: any) => ({ ...x, kind: 'approval' })),
@@ -182,9 +217,14 @@ export class Client {
   async attach(sessionId: string) {
     this.generation++; const generation = this.generation;
     if (sessionId !== this.view.sessionId) this.approvalMode = '';
-    this.view.sessionId = sessionId; this.messages = []; this.snapshot = {}; this.seq = 0; this.page = {}; this.syncCursor = '';
-    this.sessionWorkspace = ''; this.notice = sessionId ? '正在加载会话…' : '新建对话 · F3 配置模型与工作区 · Ctrl+P 查看操作';
-    this.identity = { transcriptRevision: 0, contextEpoch: 0 };
+    const isSameSession = Boolean(sessionId && sessionId === this.view.sessionId);
+    this.view.sessionId = sessionId;
+    if (!isSameSession) {
+      this.messages = []; this.snapshot = {}; this.seq = 0; this.page = {}; this.syncCursor = '';
+      this.sessionWorkspace = '';
+    }
+    this.notice = sessionId ? '正在加载会话…' : '新建对话 · F3 配置模型与工作区 · Ctrl+P 查看操作';
+    if (!isSameSession) this.identity = { transcriptRevision: 0, contextEpoch: 0 };
     this.save(); this.changed();
     if (!sessionId) return;
     const [data, scope] = await Promise.all([
@@ -290,6 +330,7 @@ export class Client {
   }
   stop() { this.stopped = true; this.generation++; this.transportAbort.abort(); this.save(true); }
   async ensureSession() {
+    if (this.connection !== '已连接' && this.engineReadyPromise) await this.waitForEngineReady();
     if (this.view.sessionId) return this.view.sessionId;
     if (!this.view.workspace) throw new Error('请先在设置中选择并确认工作区。');
     const approvalMode = this.approvalMode;
@@ -302,6 +343,15 @@ export class Client {
     if (this.busy) return;
     if (this.draft.unknown) throw new Error('前次发送结果待确认；请先对账，不可重复提交。');
     if (!this.draft.text.trim() && !this.draft.attachments.length) return;
+    if (this.connection !== '已连接' && this.engineReadyPromise) {
+      this.notice = 'Engine 正在准备中，将在连接就绪后自动发送…';
+      this.changed();
+      try {
+        await this.waitForEngineReady();
+      } catch (err: any) {
+        throw new Error(`Engine 尚未就绪：${err?.message || err}`);
+      }
+    }
     this.busy = true; this.changed();
     try {
       const sessionId = await this.ensureSession(), draft = this.draft;
@@ -408,4 +458,305 @@ export class Client {
     if (result.workspaceTrustState !== 'trusted') throw new Error('Engine 未确认工作区信任。');
     this.view.workspace = resolved; this.save(); this.notice = '工作区已登记；新会话将使用此目录。'; this.changed();
   }
+  async branch(title?: string): Promise<{ sessionId: string; title: string }> {
+    const currentSessionId = this.view.sessionId;
+    if (!currentSessionId) throw new Error('当前处于新会话，尚未产生历史记录，无需分叉。');
+    const payload: Record<string, any> = {
+      expectedTranscriptRevision: this.identity.transcriptRevision || undefined,
+    };
+    const res = await this.api(`/v1/sessions/${encodeURIComponent(currentSessionId)}/branches`, {
+      method: 'POST',
+      body: payload,
+    });
+    const newSessionId = String(res.sessionId || res.id || '');
+    if (!newSessionId) throw new Error('Engine 未能返回新分支会话标识。');
+    const branchTitle: string = String(title?.trim() || res.title || '分支会话');
+    if (title?.trim()) {
+      await this.api(`/v1/sessions/${encodeURIComponent(newSessionId)}`, {
+        method: 'PATCH',
+        body: { title: branchTitle },
+      }).catch(() => {});
+    }
+    await this.listSessions();
+    await this.attach(newSessionId);
+    this.notice = `已分叉为新分支会话：${branchTitle}`;
+    this.changed();
+    return { sessionId: newSessionId, title: branchTitle };
+  }
+  async compressContext(): Promise<{ window: number; currentTokens: number; summary: string }> {
+    const sessionId = this.view.sessionId;
+    if (!sessionId) throw new Error('需要先进入一个会话才能查看或压缩上下文。');
+    const current = await this.api('/v1/config-registry/context').catch(() => null);
+    const policy = current?.data?.policy?.compression || {};
+    const window = policy.default_context_window_tokens || 32000;
+    await this.refreshSnapshot();
+    const timeline = this.snapshot?.runtimeTimeline || {};
+    const currentTokens = Number(timeline.contextTokens || timeline.totalTokens || 0);
+    return {
+      window,
+      currentTokens,
+      summary: `窗口上限：${window} Token · 当前占用：${currentTokens || '未知'} Token · 软压缩阈值：${policy.soft_trigger_ratio ?? 0.9} · 保留轮数：${policy.keep_recent_turns || 4}`,
+    };
+  }
+
+  async getWorkspaceDiff(): Promise<WorkspaceDiffResult> {
+    const cwd = this.workspace || process.cwd();
+    try {
+      const { stdout: statusOut } = await execFileAsync('git', ['status', '--porcelain'], { cwd }).catch(() => ({ stdout: '' }));
+      const untrackedFiles: string[] = [];
+      for (const line of (statusOut || '').split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('?? ')) {
+          untrackedFiles.push(trimmed.slice(3).trim());
+        }
+      }
+
+      let rawDiff = '';
+      try {
+        const diffProc = await execFileAsync('git', ['diff', 'HEAD', '-U3'], { cwd });
+        rawDiff = diffProc.stdout || '';
+      } catch {
+        try {
+          const diffProc = await execFileAsync('git', ['diff', '-U3'], { cwd });
+          rawDiff = diffProc.stdout || '';
+        } catch (err: any) {
+          return {
+            clean: untrackedFiles.length === 0,
+            files: [],
+            totalAdditions: 0,
+            totalDeletions: 0,
+            untrackedFiles,
+            error: `Git diff 执行失败：${err?.message || err}`,
+          };
+        }
+      }
+
+      if (!rawDiff.trim() && untrackedFiles.length === 0) {
+        return { clean: true, files: [], totalAdditions: 0, totalDeletions: 0, untrackedFiles };
+      }
+
+      const files: WorkspaceDiffFile[] = [];
+      const fileBlocks = rawDiff.split(/^diff --git /m).filter(Boolean);
+      let totalAdditions = 0;
+      let totalDeletions = 0;
+
+      for (const block of fileBlocks) {
+        const lines = block.split(/\r?\n/);
+        const headerLine = lines[0] || '';
+        const match = headerLine.match(/a\/(.+?)\s+b\/(.+)$/);
+        const filePath = match ? match[2].trim() : headerLine.trim();
+
+        let additions = 0;
+        let deletions = 0;
+        const chunks: Array<{ header: string; lines: string[] }> = [];
+        let currentChunk: { header: string; lines: string[] } | null = null;
+
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i];
+          if (line.startsWith('@@')) {
+            currentChunk = { header: line, lines: [] };
+            chunks.push(currentChunk);
+          } else if (currentChunk) {
+            currentChunk.lines.push(line);
+            if (line.startsWith('+') && !line.startsWith('+++')) {
+              additions++;
+              totalAdditions++;
+            } else if (line.startsWith('-') && !line.startsWith('---')) {
+              deletions++;
+              totalDeletions++;
+            }
+          }
+        }
+
+        files.push({
+          path: filePath,
+          additions,
+          deletions,
+          chunks,
+          rawDiff: 'diff --git ' + block,
+        });
+      }
+
+      return {
+        clean: files.length === 0 && untrackedFiles.length === 0,
+        files,
+        totalAdditions,
+        totalDeletions,
+        untrackedFiles,
+      };
+    } catch (err: any) {
+      return {
+        clean: true,
+        files: [],
+        totalAdditions: 0,
+        totalDeletions: 0,
+        untrackedFiles: [],
+        error: `无法获取工作区修改：${err?.message || err}`,
+      };
+    }
+  }
+
+  async rewindLastTurn(): Promise<{ success: boolean; text: string; messageId?: string }> {
+    const sessionId = this.view.sessionId;
+    if (!sessionId) throw new Error('当前为新会话，尚未产生可回退的对话轮次。');
+    const userMessages = this.messages.filter(m => m.role === 'user');
+    if (userMessages.length === 0) {
+      throw new Error('当前会话暂无用户消息可回滚。');
+    }
+    const lastUserMsg = userMessages[userMessages.length - 1];
+    let userText = '';
+    if (typeof lastUserMsg.content === 'string') {
+      userText = lastUserMsg.content;
+    } else if (Array.isArray(lastUserMsg.content)) {
+      userText = lastUserMsg.content.map((p: any) => typeof p === 'string' ? p : p?.text || '').join('');
+    } else if (lastUserMsg.content && typeof lastUserMsg.content === 'object') {
+      userText = (lastUserMsg.content as any).text || '';
+    } else {
+      userText = String(lastUserMsg.content || '');
+    }
+
+    await this.api(`/v1/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(lastUserMsg.id)}`, {
+      method: 'PATCH',
+      body: {
+        content: userText,
+        expectedMessageVersion: lastUserMsg.version ?? 1,
+        expectedTranscriptRevision: this.identity.transcriptRevision,
+        tailPolicy: 'truncate',
+      },
+    });
+
+    this.setDraft(userText);
+    await this.refreshSnapshot();
+    await this.attach(sessionId);
+    this.notice = '已回退上一轮对话，原问题已恢复至输入框草稿。';
+    this.changed();
+    return { success: true, text: userText, messageId: lastUserMsg.id };
+  }
+
+  async listRevisions(messageId?: string): Promise<any[]> {
+    const sessionId = this.view.sessionId;
+    if (!sessionId) return [];
+    const targetId = messageId || this.messages.filter(m => m.role === 'user').pop()?.id;
+    if (!targetId) return [];
+    const data = await this.api(`/v1/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(targetId)}/revisions`).catch(() => ({ revisions: [] }));
+    return data.revisions || [];
+  }
+
+  async restoreRevision(messageId: string, revisionId: string): Promise<any> {
+    const sessionId = this.view.sessionId;
+    if (!sessionId) throw new Error('会话不存在');
+    const res = await this.api(`/v1/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/revisions/${encodeURIComponent(revisionId)}/restore`, {
+      method: 'POST',
+      body: {
+        expectedMessageVersion: 1,
+        expectedTranscriptRevision: this.identity.transcriptRevision,
+        userId: this.owner.sessionIdentifier,
+      },
+    });
+    await this.refreshSnapshot();
+    await this.attach(sessionId);
+    this.notice = '已从历史快照版本成功恢复。';
+    this.changed();
+    return res;
+  }
+
+  async initProjectContract(): Promise<{ path: string; created: boolean; summary: string }> {
+    const cwd = this.workspace || process.cwd();
+    const targetFile = path.join(cwd, 'AGENTS.md');
+    let alreadyExists = false;
+    try {
+      const s = await stat(targetFile);
+      alreadyExists = s.isFile();
+    } catch {}
+
+    const detectedStacks: string[] = [];
+    let testCommand = 'npm test';
+    let buildCommand = 'npm run build';
+    let projectName = path.basename(cwd) || 'Workspace';
+
+    try {
+      const pkgRaw = await readFile(path.join(cwd, 'package.json'), 'utf-8');
+      const pkg = JSON.parse(pkgRaw);
+      if (pkg.name) projectName = pkg.name;
+      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+      if (allDeps.next) detectedStacks.push('Next.js');
+      else if (allDeps.react) detectedStacks.push('React');
+      if (allDeps.vue) detectedStacks.push('Vue');
+      if (allDeps.typescript) detectedStacks.push('TypeScript');
+      if (allDeps.electron) detectedStacks.push('Electron');
+      if (allDeps.tailwindcss) detectedStacks.push('Tailwind CSS');
+      detectedStacks.push('Node.js');
+
+      if (pkg.scripts?.test) testCommand = 'npm test';
+      if (pkg.scripts?.build) buildCommand = 'npm run build';
+    } catch {}
+
+    try {
+      await stat(path.join(cwd, 'Cargo.toml'));
+      detectedStacks.push('Rust / Cargo');
+      testCommand = 'cargo test';
+      buildCommand = 'cargo build';
+    } catch {}
+
+    try {
+      await stat(path.join(cwd, 'pyproject.toml'));
+      detectedStacks.push('Python (pyproject)');
+      testCommand = 'pytest';
+    } catch {
+      try {
+        await stat(path.join(cwd, 'requirements.txt'));
+        detectedStacks.push('Python (requirements.txt)');
+        testCommand = 'pytest';
+      } catch {}
+    }
+
+    try {
+      await stat(path.join(cwd, 'go.mod'));
+      detectedStacks.push('Go');
+      testCommand = 'go test ./...';
+      buildCommand = 'go build';
+    } catch {}
+
+    const stackDesc = detectedStacks.length ? detectedStacks.join(', ') : '通用工程工作区';
+
+    const content = `# ${projectName} - V8OS 工程协作规范
+
+> 本文件由 V8OS /init 命令智能生成，定义工作区协作规范与运行时契约。
+
+## 技术栈与工程事实
+- 技术栈：${stackDesc}
+- 构建命令：\`${buildCommand}\`
+- 测试入口：\`${testCommand}\`
+
+## 核心协作协议 (Supervisor First, Runtime Grounded)
+1. **主代理职责**：Supervisor 负责理解意图、编排调度与把关，直接执行确定性操作；不依赖二次规划层。
+2. **外科手术式修改 (Surgical Modifications)**：
+   - 仅修改与当前任务直接相关的文件和行；
+   - 匹配项目现有代码风格，不擅自对无关代码进行批量格式化；
+   - 每一个 diff 必须可追溯到用户需求或必要的验收。
+3. **安全与凭据保护**：
+   - 绝对禁止在代码中硬编码或提交真实 API Key、Token 或敏感凭据；
+   - 保护用户本地配置与他人改动，禁止无授权执行破坏性 git reset 或 checkout。
+4. **验证与回归**：
+   - 完成修改后，必须运行最小必要验证（\`${testCommand}\`）；
+   - 交付清单必须包含：变更内容、验证结果和剩余风险。
+`;
+
+    if (alreadyExists) {
+      const backupFile = path.join(cwd, 'AGENTS.md.bak');
+      const existing = await readFile(targetFile, 'utf-8');
+      await writeFile(backupFile, existing, 'utf-8');
+    }
+    await writeFile(targetFile, content, 'utf-8');
+
+    this.notice = alreadyExists ? '已备份并重新生成 AGENTS.md 规范契约。' : '已成功初始化 AGENTS.md 规范契约。';
+    this.changed();
+
+    return {
+      path: targetFile,
+      created: !alreadyExists,
+      summary: `项目：${projectName} · 技术栈：${stackDesc} · 规范已就绪`,
+    };
+  }
+
 }

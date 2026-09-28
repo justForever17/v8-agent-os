@@ -146,3 +146,69 @@ test('token budgets remain visible and editable while credential fields are bloc
     assert.equal(containsSecretField({ nested: { [key]: 'private' } }), true); assert.equal(describe({ [key]: 'private' }).length, 0);
   }
 });
+
+test('attach preserves current session messages during reload and never flashes empty transcript', async () => {
+  let resolveTurns: (v: any) => void = () => {};
+  const client = make(async (route: string) => {
+    if (route.includes('/turns')) {
+      return new Promise(resolve => { resolveTurns = resolve; });
+    }
+    return {};
+  });
+  client.messages = [{ id: 'msg-1', content: 'existing message' }];
+  
+  // Trigger attach for the same session (e.g. revision update during streaming)
+  const attachPromise = client.attach('s');
+  
+  // While turns request is in-flight, messages must NOT be cleared to empty array!
+  assert.equal(client.messages.length, 1);
+  assert.equal(client.messages[0].id, 'msg-1');
+  
+  // Resolve turns with new message
+  resolveTurns({ messages: [{ id: 'msg-1', content: 'existing' }, { id: 'msg-2', content: 'new reply' }] });
+  await attachPromise;
+  
+  // After completion, updated messages are applied
+  assert.equal(client.messages.length, 2);
+  assert.equal(client.messages[1].id, 'msg-2');
+  client.stop();
+});
+
+test('provisional UI: submit waits for engineReadyPromise before sending and does not drop draft', async () => {
+  let resolveEngine = () => {};
+  const enginePromise = new Promise(resolve => { resolveEngine = resolve; });
+  let chatSubmitted = false;
+  const client = make(async (route, options) => {
+    if (route.endsWith('/instance')) return { instanceId: 'test-inst' };
+    if (route.endsWith('/owner')) return { initialized: true, user: { sessionIdentifier: 'test-owner' } };
+    if (route.endsWith('/sessions')) return { id: 'sess-new', title: 'New' };
+    if (route.endsWith('/turns')) return { messages: [] };
+    if (route.endsWith('/scope')) return { binding: { workspacePath: 'E:/test' } };
+    if (route.endsWith('/snapshot')) return { latestSeq: 1 };
+    if (route.endsWith('/projects')) return { workspaceTrustState: 'trusted' };
+    if (route.endsWith('/chat/submit')) {
+      chatSubmitted = true;
+      return { accepted: true, runId: 'run-1' };
+    }
+    return {};
+  });
+  client.view.workspace = 'E:/test';
+  client.setEngineReadyPromise(enginePromise);
+  client.connection = 'Engine 准备中';
+
+  client.setDraft('hello engine');
+  let submitDone = false;
+  const submitPromise = client.submit().then(() => { submitDone = true; });
+
+  assert.equal(submitDone, false, 'submit should be waiting for engine ready');
+  assert.equal(chatSubmitted, false, 'chat should not be submitted yet');
+  assert.match(client.notice, /Engine 正在准备中/);
+
+  // Now engine resolves and initializes
+  resolveEngine();
+  await submitPromise;
+
+  assert.equal(submitDone, true, 'submit should complete after engine is ready');
+  assert.equal(chatSubmitted, true, 'chat should be submitted after engine is ready');
+  client.stop();
+});

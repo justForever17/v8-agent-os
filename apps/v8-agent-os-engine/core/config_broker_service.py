@@ -4698,6 +4698,12 @@ class ConfigBrokerService:
                 )
                 if target_mutated:
                     validation.setdefault("targetWorkingDigest", _digest(target_after))
+                    if transaction.get("targetKind") in {"model_role", "model_role_bundle", "model_provider"}:
+                        try:
+                            from agents.runners.supervisor_runner import request_supervisor_graph_prewarm
+                            request_supervisor_graph_prewarm(reason=f"config_broker_{transaction.get('targetKind')}")
+                        except Exception:
+                            pass
                 validation["targetAfterDigest"] = _digest(target_after)
                 committed_at = utc_now_iso()
                 self._update_transaction(

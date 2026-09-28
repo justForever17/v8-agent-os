@@ -210,10 +210,59 @@ async def _prewarm_supervisor_graph(
                 # Keep this work off the HTTP loop as well as graph compilation.
                 resolver = _import_module("core.engine_config_resolver")
                 resolved = resolver.resolve_engine_config_for_role("supervisor")
-                config = resolver.require_engine_config(resolved, role="supervisor")
+                try:
+                    config = resolver.require_engine_config(resolved, role="supervisor")
+                except Exception as exc:
+                    if getattr(exc, "code", None) == "model_not_configured":
+                        return None, None
+                    raise
                 runner = _import_module("agents.runners.supervisor_runner").supervisor_runner
                 return runner, config
             runner, config = await asyncio.to_thread(prepare)
+            if runner is None or config is None:
+                def warm_skeleton():
+                    try:
+                        _import_module("graph.supervisor")
+                    except Exception:
+                        pass
+                    try:
+                        _import_module("core.llm_factory")
+                    except Exception:
+                        pass
+                    try:
+                        extensions_runtime = _import_module("core.extensions_runtime").extensions_runtime_service
+                        extensions_runtime.get_mcp_tools()
+                    except Exception:
+                        pass
+                    try:
+                        storage = _import_module("core.storage").storage
+                        _import_module("core.agents").build_subagent_registry_snapshot(storage.get_all_agents())
+                    except Exception:
+                        pass
+                await asyncio.to_thread(warm_skeleton)
+                async def warm_checkpointer():
+                    try:
+                        checkpoint_store = _import_module("erc.checkpoint_store").checkpoint_store
+                        await checkpoint_store.get_async_sqlite_saver()
+                    except Exception:
+                        pass
+                try:
+                    await _get_chat_run_scheduler().run(
+                        warm_checkpointer(),
+                        task_name="supervisor-skeleton-prewarm",
+                    )
+                except Exception:
+                    pass
+                result = {
+                    "ok": True,
+                    "graphCacheHit": False,
+                    "skeletonPrewarmed": True,
+                    "modelConfigured": False,
+                }
+                if provider_prewarm_error_type:
+                    result["providerPrewarmErrorType"] = provider_prewarm_error_type
+                return result
+
             _graph, diagnostics = await _get_chat_run_scheduler().run(
                 runner.build_graph(config),
                 task_name=task_name,
@@ -229,7 +278,7 @@ async def _prewarm_supervisor_graph(
 
         safe_diagnostics = await _build_once(task_name="supervisor-graph-prewarm")
         print("[Engine] Supervisor graph prewarm completed:", safe_diagnostics)
-        if pending_prerequisite_tasks:
+        if pending_prerequisite_tasks and not safe_diagnostics.get("skeletonPrewarmed"):
             completed_followup, _still_pending = await asyncio.wait(
                 pending_prerequisite_tasks,
                 timeout=_SUPERVISOR_GRAPH_PREWARM_FOLLOWUP_TIMEOUT_SECONDS,
@@ -279,6 +328,9 @@ def _supervisor_graph_warmup_status(application) -> dict[str, object]:
         "inventoryFollowupCacheHit": bool(result.get("inventoryFollowupCacheHit")),
         "inventoryFollowupBuildMs": float(result.get("inventoryFollowupBuildMs") or 0),
     }
+    if result.get("skeletonPrewarmed"):
+        status["skeletonPrewarmed"] = True
+        status["modelConfigured"] = False
     if result.get("providerPrewarmErrorType"):
         status["providerPrewarmErrorType"] = str(result["providerPrewarmErrorType"])
     return status

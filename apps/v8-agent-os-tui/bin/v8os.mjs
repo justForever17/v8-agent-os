@@ -134,18 +134,37 @@ async function main() {
         releaseError = error instanceof Error ? error : new Error(String(error));
       }
     };
+    let tuiClient = null;
     try {
-      started = await startEngine({ ...options, lifecycle: 'desktop' });
-      process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort);
-      const consent = await ensureWorkspaceConsent({ root: started.runtimeRoot, signal: controller.signal, english });
-      if (!consent.ok) {
-        await safeRelease();
-        return 0;
-      }
       process.env.NODE_ENV ||= 'production';
       if (args.includes('--no-color') || process.env.NO_COLOR !== undefined) process.env.FORCE_COLOR = '0';
       const tuiArgs = (args[0] === 'tui' ? args.slice(1) : args).filter(arg => arg !== '--no-install');
-      await (await import('../dist/main.js')).start(tuiArgs);
+
+      const tuiProgress = text => {
+        if (tuiClient) {
+          tuiClient.notice = text;
+          tuiClient.changed();
+        }
+      };
+
+      const enginePromise = (async () => {
+        const startedResult = await startEngine({
+          ...options,
+          progress: tuiProgress,
+          lifecycle: 'desktop',
+        });
+        started = startedResult;
+        process.removeListener('SIGINT', abort);
+        process.removeListener('SIGTERM', abort);
+        return startedResult;
+      })();
+
+      await (await import('../dist/main.js')).start(tuiArgs, {
+        enginePromise,
+        onClientCreated: c => {
+          tuiClient = c;
+        },
+      });
     } catch (error) { tuiError = error; }
     finally {
       // A TUI-owned Engine process is a short-lived lease.  A daemon/service

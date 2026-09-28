@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import threading
 from dataclasses import dataclass
@@ -353,3 +354,31 @@ class SupervisorAgentRunner:
 
 
 supervisor_runner = SupervisorAgentRunner()
+
+
+def request_supervisor_graph_prewarm(reason: str = "model_config_updated") -> None:
+    """Schedule background prewarming of the supervisor graph onto chat_run_scheduler."""
+    try:
+        scheduler_module = importlib.import_module("core.chat_run_scheduler")
+        scheduler = scheduler_module.chat_run_scheduler
+        if not scheduler.is_ready():
+            return
+        resolver_module = importlib.import_module("core.engine_config_resolver")
+        resolved = resolver_module.resolve_engine_config_for_role("supervisor")
+        config = resolver_module.require_engine_config(resolved, role="supervisor")
+    except Exception:
+        # Model not configured yet or scheduler unavailable
+        return
+
+    async def _async_prewarm():
+        try:
+            _graph, diagnostics = await supervisor_runner.build_graph(config)
+            print(f"[Engine] Supervisor graph prewarmed ({reason}):", diagnostics)
+        except Exception as exc:
+            print(f"[Engine] Supervisor graph prewarm failed ({reason}, non-fatal):", type(exc).__name__)
+
+    try:
+        scheduler.submit(_async_prewarm(), task_name=f"supervisor-graph-prewarm-{reason}")
+    except Exception:
+        return
+

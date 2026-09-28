@@ -2218,6 +2218,11 @@ async def connect_model_provider(data: dict = Body(...)):
                 model_provider_catalog.delete_custom_provider(provider_id)
                 raise
         saved = dict(committed_transaction.get("config") or model_control_plane.get_public_config())
+        try:
+            from agents.runners.supervisor_runner import request_supervisor_graph_prewarm
+            request_supervisor_graph_prewarm(reason="model_connect")
+        except Exception:
+            pass
         return {
             "ok": True,
             "providerId": provider_id,

@@ -178,3 +178,68 @@ def test_graph_cache_miss_reasons_are_category_only() -> None:
         "subagents",
         "mcp_inventory",
     ]
+
+def test_request_supervisor_graph_prewarm_submits_to_scheduler(monkeypatch) -> None:
+    from agents.runners.supervisor_runner import request_supervisor_graph_prewarm
+
+    events = []
+    configured = SimpleNamespace(model_dump=lambda **_kwargs: {"model": "m"})
+
+    class Scheduler:
+        def is_ready(self):
+            return True
+        def submit(self, coro, task_name="test"):
+            events.append(f"submit:{task_name}")
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(coro)
+            finally:
+                loop.close()
+
+    class Resolver:
+        resolve_engine_config_for_role = staticmethod(lambda _role: {})
+        require_engine_config = staticmethod(lambda _resolved, *, role: configured)
+
+    monkeypatch.setattr(runner_module, "create_supervisor_graph", lambda config, checkpointer=None: events.append("graph:built") or object())
+    monkeypatch.setattr(runner_module.checkpoint_store, "get_async_sqlite_saver", lambda: asyncio.sleep(0, result=object()))
+    monkeypatch.setattr("core.chat_run_scheduler.chat_run_scheduler", Scheduler())
+    monkeypatch.setattr("core.engine_config_resolver.resolve_engine_config_for_role", Resolver.resolve_engine_config_for_role)
+    monkeypatch.setattr("core.engine_config_resolver.require_engine_config", Resolver.require_engine_config)
+
+    request_supervisor_graph_prewarm(reason="test_model_connect")
+    assert "submit:supervisor-graph-prewarm-test_model_connect" in events
+    assert "graph:built" in events
+
+
+def test_prewarm_supervisor_skeleton_when_model_not_configured(monkeypatch) -> None:
+    import main
+    from core.llm_exceptions import V8LLMInvalidRequestError
+
+    events = []
+
+    class Resolver:
+        @staticmethod
+        def resolve_engine_config_for_role(_role: str):
+            return {}
+
+        @staticmethod
+        def require_engine_config(_resolved, *, role: str):
+            raise V8LLMInvalidRequestError(
+                code="model_not_configured",
+                message="no model configured",
+            )
+
+    class Scheduler:
+        async def run(self, coroutine, *, task_name: str):
+            events.append(f"run:{task_name}")
+            return await coroutine
+
+    monkeypatch.setattr(main, "_import_module", lambda name: Resolver if name == "core.engine_config_resolver" else importlib.import_module(name))
+    monkeypatch.setattr(main, "_get_chat_run_scheduler", lambda: Scheduler())
+
+    result = asyncio.run(main._prewarm_supervisor_graph())
+    assert result["ok"] is True
+    assert result["skeletonPrewarmed"] is True
+    assert result["modelConfigured"] is False
+    assert any("supervisor-skeleton-prewarm" in e for e in events)
+

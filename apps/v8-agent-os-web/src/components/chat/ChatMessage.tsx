@@ -3,6 +3,7 @@
 
 import { User, Copy, Trash2, Check, TerminalSquare, ChevronDown, ChevronUp, Orbit, AtSign, FileText, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { useState, memo, useMemo, useCallback, type ReactNode } from "react";
 import { groupTimelineNodes, type TimelineSegment } from "@/lib/chat/timeline-grouper";
@@ -34,6 +35,7 @@ import { ContentDispatcher } from "./ContentDispatcher";
 import { cn } from "@/lib/utils";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { ArtifactCard } from "./ArtifactCard";
+import { EditedFilesCard, type EditedFileItem } from "./EditedFilesCard";
 import { dedupeArtifactItemsForPresentation, inferArtifactCardType, prioritizeArtifactItems, resolveRuntimeArtifactUrl } from "@/lib/artifacts";
 import { downloadArtifact } from "@/lib/artifact-download";
 import { createArtifactDocument, createSessionOverviewDocument } from "@/lib/workbench";
@@ -490,6 +492,40 @@ function AssistantActivityDots({ label }: { label: string }) {
 }
 
 function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, userName, supervisorProfile, runtimeActivities = [], executionActive = false, animateEntrance = false, recovery }: ChatMessageProps) {
+
+    const [undoConfirmOpen, setUndoConfirmOpen] = useState(false);
+    const [isUndoing, setIsUndoing] = useState(false);
+
+    const handleUndoAll = useCallback(async () => {
+        if (!recovery) return;
+        setIsUndoing(true);
+        try {
+            const response = await fetch(`/api/conversations/${encodeURIComponent(recovery.props.sessionId)}/messages/${encodeURIComponent(message.id)}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    content: message.content,
+                    tailPolicy: "truncate",
+                    expectedTranscriptRevision: recovery.props.transcriptRevision,
+                    expectedMessageVersion: 1,
+                }),
+            });
+            if (response.ok) {
+                const result = await response.json();
+                await recovery.props.onCommitted(result);
+                setUndoConfirmOpen(false);
+            } else {
+                onDelete(message.id);
+                setUndoConfirmOpen(false);
+            }
+        } catch {
+            onDelete(message.id);
+            setUndoConfirmOpen(false);
+        } finally {
+            setIsUndoing(false);
+        }
+    }, [recovery, message.id, message.content, onDelete]);
+
     const t = useT();
     const [isCopied, setIsCopied] = useState(false);
     const workbenchSessionId = useWorkbenchStore((state) => state.sessionId);
@@ -583,8 +619,84 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         ),
         [message.artifacts],
     );
-    const visibleArtifacts = artifactsExpanded ? prioritizedArtifacts : prioritizedArtifacts.slice(0, 5);
-    const hiddenArtifactCount = Math.max(0, prioritizedArtifacts.length - 5);
+    const { codeEditedFiles, otherArtifacts } = useMemo(() => {
+        const files: EditedFileItem[] = [];
+        const others: typeof prioritizedArtifacts = [];
+
+        for (const artifact of prioritizedArtifacts) {
+            const cardType = inferArtifactCardType(artifact);
+            if (cardType === 'code' || cardType === 'file') {
+                const filePath = artifact.workspaceRelativePath || artifact.canonicalPath || artifact.displaySubtitle || artifact.title || artifact.id;
+                const meta = artifact.metadata || {};
+                const diffStr = typeof meta.diff === 'string' ? meta.diff : typeof meta.patch === 'string' ? meta.patch : undefined;
+                let addCount = Number(meta.additions ?? (meta.stats as any)?.additions ?? 0);
+                let delCount = Number(meta.deletions ?? (meta.stats as any)?.deletions ?? 0);
+                if (!addCount && !delCount && diffStr) {
+                    for (const l of diffStr.split('\n')) {
+                        if (l.startsWith('+') && !l.startsWith('+++')) addCount++;
+                        else if (l.startsWith('-') && !l.startsWith('---')) delCount++;
+                    }
+                }
+                files.push({
+                    id: artifact.id,
+                    filePath,
+                    fileName: artifact.title || artifact.displayLabel || artifact.id,
+                    additions: addCount,
+                    deletions: delCount,
+                    diff: diffStr,
+                    onClick: workbenchSessionId ? () => openWorkbenchDocument(createArtifactDocument(artifact, workbenchSessionId), { activate: true, mode: "split" }) : undefined,
+                });
+            } else {
+                others.push(artifact);
+            }
+        }
+
+        if (Array.isArray(message.nodes)) {
+            for (const node of message.nodes) {
+                if (node.kind === 'execution' && (node.executionType === 'tool_result' || node.executionType === 'tool_call')) {
+                    const toolName = String(node.toolName || '');
+                    if (['replace_file_content', 'multi_replace_file_content', 'write_to_file', 'edit_file', 'apply_diff'].includes(toolName)) {
+                        const args = (node as any).args || (node as any).data?.args || {};
+                        const rawPath = String(args.TargetFile || args.AbsolutePath || args.filePath || args.path || '');
+                        if (rawPath) {
+                            const normalizedPath = rawPath.replace(/\\/g, '/');
+                            if (!files.some(f => f.filePath === normalizedPath || f.filePath.endsWith(normalizedPath) || normalizedPath.endsWith(f.filePath))) {
+                                const resultStr = typeof (node as any).result === 'string' ? (node as any).result : JSON.stringify((node as any).result || '');
+                                let diffStr: string | undefined = undefined;
+                                if (resultStr.includes('[diff_block_start]')) {
+                                    const match = resultStr.match(/\[diff_block_start\]([\s\S]*?)\[diff_block_end\]/);
+                                    if (match) diffStr = match[1].trim();
+                                } else if ((node as any).result?.diff) {
+                                    diffStr = (node as any).result.diff;
+                                }
+                                let addCount = 0;
+                                let delCount = 0;
+                                if (diffStr) {
+                                    for (const l of diffStr.split('\n')) {
+                                        if (l.startsWith('+') && !l.startsWith('+++')) addCount++;
+                                        else if (l.startsWith('-') && !l.startsWith('---')) delCount++;
+                                    }
+                                }
+                                files.push({
+                                    id: `tool-${node.toolCallId || normalizedPath}`,
+                                    filePath: normalizedPath,
+                                    fileName: normalizedPath.split('/').pop() || normalizedPath,
+                                    additions: addCount,
+                                    deletions: delCount,
+                                    diff: diffStr,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return { codeEditedFiles: files, otherArtifacts: others };
+    }, [prioritizedArtifacts, message.nodes, workbenchSessionId, openWorkbenchDocument]);
+
+    const visibleOtherArtifacts = artifactsExpanded ? otherArtifacts : otherArtifacts.slice(0, 5);
+    const hiddenOtherArtifactCount = Math.max(0, otherArtifacts.length - 5);
 
     // Prepare media items for Lightbox (if message has images)
     const imagesArray = useMemo(
@@ -1196,10 +1308,16 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                     )}
 
                     <div className="space-y-4">
-                        {prioritizedArtifacts.length > 0 && (
-                             <div className="space-y-2">
-                                {visibleArtifacts.map((artifact) => {
-                                     const artifactUrl = resolveRuntimeArtifactUrl(artifact);
+                        {codeEditedFiles.length > 0 && (
+                            <EditedFilesCard
+                                files={codeEditedFiles}
+                                onUndoAll={recovery ? () => setUndoConfirmOpen(true) : undefined}
+                            />
+                        )}
+                        {otherArtifacts.length > 0 && (
+                            <div className="space-y-2">
+                                {visibleOtherArtifacts.map((artifact) => {
+                                    const artifactUrl = resolveRuntimeArtifactUrl(artifact);
                                     return (
                                         <ArtifactCard
                                             key={artifact.id}
@@ -1210,9 +1328,9 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                             onClick={workbenchSessionId ? () => openWorkbenchDocument(createArtifactDocument(artifact, workbenchSessionId), { activate: true, mode: "split" }) : undefined}
                                             onDownload={artifactUrl ? () => downloadArtifact(artifactUrl, artifact.title || artifact.id) : undefined}
                                         />
-                                     );
-                                 })}
-                                {hiddenArtifactCount > 0 ? (
+                                    );
+                                })}
+                                {hiddenOtherArtifactCount > 0 ? (
                                     <button
                                         type="button"
                                         data-artifact-disclosure="message"
@@ -1222,12 +1340,12 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                     >
                                         {artifactsExpanded
                                             ? t("web.artifacts.collapse")
-                                            : t("web.artifacts.showRemaining", { count: hiddenArtifactCount })}
+                                            : t("web.artifacts.showRemaining", { count: hiddenOtherArtifactCount })}
                                         {artifactsExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                                     </button>
                                 ) : null}
-                             </div>
-                         )}
+                            </div>
+                        )}
                         {imagesArray.length > 0 && (
                             <div className="mb-1 flex flex-wrap gap-2">
                                 {imagesArray.map((url, i) => {
@@ -1292,6 +1410,26 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                     </div>
                 )}
             </div>
+        
+            <Dialog open={undoConfirmOpen} onOpenChange={setUndoConfirmOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>确认撤销文件修改</DialogTitle>
+                        <DialogDescription>
+                            将回退本轮生成的 {codeEditedFiles.length} 个代码修改，并截断当前轮次恢复至提问前状态。
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setUndoConfirmOpen(false)} disabled={isUndoing}>
+                            取消
+                        </Button>
+                        <Button variant="destructive" onClick={handleUndoAll} disabled={isUndoing}>
+                            {isUndoing ? "正在撤销..." : "确认撤销"}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
         </motion.div>
 
             {/* Global Lightbox for this message bubble */}

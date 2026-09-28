@@ -577,6 +577,12 @@ export function InputArea({
         { name: "spec analyze", summary: t("web.composer.spec.analyze"), specCommandAction: "analyze" },
         { name: "spec annex", summary: t("web.composer.spec.annex"), specCommandAction: "annex" },
     ]), [t]);
+
+    const initCommand = React.useMemo<CommandPresetSummary>(() => ({
+        name: "init",
+        summary: t("web.composer.init.summary") || "探测工作区依赖并生成/更新 AGENTS.md 规范",
+        initAction: "workspace_contract_init",
+    }), [t]);
     const memoryCommand = React.useMemo<CommandPresetSummary>(() => ({
         name: "memory",
         summary: t("web.composer.memory.summary"),
@@ -602,7 +608,7 @@ export function InputArea({
     const isCommandPickerOpen = inlineQuery?.kind === "command";
     const isSkillPickerOpen = inlineQuery?.kind === "mention";
     const filteredCommandPresets = React.useMemo(() => {
-        const allCommands = [memoryCommand, ...(contextUsageCommand ? [contextUsageCommand] : []), ...specCommandPresets, ...commandPresets];
+        const allCommands = [initCommand, memoryCommand, ...(contextUsageCommand ? [contextUsageCommand] : []), ...specCommandPresets, ...commandPresets];
         if (!slashQuery) {
             return allCommands;
         }
@@ -612,7 +618,7 @@ export function InputArea({
             || String(preset.summary || "").toLowerCase().includes(keyword)
             || String(preset.filename || "").toLowerCase().includes(keyword)
         );
-    }, [commandPresets, contextUsageCommand, memoryCommand, slashQuery, specCommandPresets]);
+    }, [commandPresets, contextUsageCommand, initCommand, memoryCommand, slashQuery, specCommandPresets]);
     const filteredMentionItems = React.useMemo<MentionPickerItem[]>(() => {
         const selectedKeys = new Set(selectedSkills.map((skill) => `${skill.name}::${skill.path || ""}`));
         const selectedFamilyIds = new Set(selectedSubagentFamilies.map((family) => family.familyId));
@@ -1431,6 +1437,13 @@ export function InputArea({
                 ];
                 if (contextMentions.length > 0) {
                     nextData.contextMentions = contextMentions;
+                }
+                
+                if (selectedCommandPreset?.name === "init" || input.trim() === "/init") {
+                    nextData.projectInit = true;
+                    if (!input.trim() || input.trim() === "/init") {
+                        nextData.messageOverride = "请探测当前工作区的技术栈和项目结构，初始化并生成符合 V8OS 标准的 AGENTS.md 协作规范契约。";
+                    }
                 }
                 if (pendingSpecMode) {
                     nextData.specMode = true;

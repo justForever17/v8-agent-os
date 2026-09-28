@@ -8,6 +8,7 @@ import { UiTimelineNode, UiExecutionNode } from '@/store/chat-types';
 import { ThinkingCard } from './ThinkingCard';
 import { McpAppFrame } from './McpAppFrame';
 import { ToolCard, ToolInvocation } from './ToolCard';
+import { EditedFilesCard, type EditedFileItem } from './EditedFilesCard';
 import { GenericToolTraceCard } from './GenericToolTraceCard';
 import { ApprovalCard } from './ApprovalCard';
 import { parseContentToBlocks } from '@/lib/chat/content-detector';
@@ -245,6 +246,41 @@ interface ToolRendererProps {
     process?: AdminProcessRef;
 }
 
+function FileChangeToolRenderer({ toolInvocation }: ToolRendererProps) {
+    const args = toolInvocation.args || {};
+    const rawPath = String(args.TargetFile || args.AbsolutePath || args.filePath || args.path || '');
+    const normalizedPath = rawPath.replace(/\\/g, '/');
+    const resultStr = typeof toolInvocation.result === 'string' ? toolInvocation.result : JSON.stringify(toolInvocation.result || '');
+    let diffStr: string | undefined = undefined;
+    if (resultStr.includes('[diff_block_start]')) {
+        const match = resultStr.match(/\[diff_block_start\]([\s\S]*?)\[diff_block_end\]/);
+        if (match) diffStr = match[1].trim();
+    } else if (toolInvocation.result?.diff) {
+        diffStr = toolInvocation.result.diff;
+    }
+    let addCount = 0;
+    let delCount = 0;
+    if (diffStr) {
+        for (const l of diffStr.split('\n')) {
+            if (l.startsWith('+') && !l.startsWith('+++')) addCount++;
+            else if (l.startsWith('-') && !l.startsWith('---')) delCount++;
+        }
+    }
+    const fileItem: EditedFileItem = {
+        id: toolInvocation.toolCallId || normalizedPath,
+        filePath: normalizedPath || '文件变更',
+        fileName: normalizedPath.split('/').pop() || normalizedPath || '文件变更',
+        additions: addCount,
+        deletions: delCount,
+        diff: diffStr,
+    };
+    return (
+        <div className="w-full">
+            <EditedFilesCard files={[fileItem]} />
+        </div>
+    );
+}
+
 function CommandSessionToolRenderer({ toolInvocation, process }: ToolRendererProps) {
     return (
         <motion.div layout className="flex flex-col">
@@ -257,6 +293,11 @@ function CommandSessionToolRenderer({ toolInvocation, process }: ToolRendererPro
 const ToolRegistry: Record<string, React.FC<ToolRendererProps> | null> = {
     'start_background_command': CommandSessionToolRenderer,
     'run_system_command': CommandSessionToolRenderer,
+    'replace_file_content': FileChangeToolRenderer,
+    'multi_replace_file_content': FileChangeToolRenderer,
+    'write_to_file': FileChangeToolRenderer,
+    'apply_diff': FileChangeToolRenderer,
+    'edit_file': FileChangeToolRenderer,
     // Tools that we want to render subtly using GenericToolTraceCard (previously blacklisted)
     'write_todos': null,
     'update_todo': null,

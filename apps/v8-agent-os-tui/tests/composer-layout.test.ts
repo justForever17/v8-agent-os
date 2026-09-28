@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { composerCursorPosition } from '../src/composer-layout.js';
+import { composerCursorPosition, fixInkCursorEscape } from '../src/composer-layout.js';
 
 test('cursor y follows transcript, candidate overlay and visible input window', () => {
   assert.deepEqual(composerCursorPosition({ columns: 80, historyHeight: 10, overlayHeight: 0, inputRow: 0, inputColumn: 0, inputOffset: 0 }), { x: 2, y: 15 });
@@ -73,4 +73,19 @@ test('cursor x and y never exceed physical terminal boundaries even under extrem
   assert.ok(clampedNegative.x >= 0);
   assert.ok(clampedNegative.y >= 0);
 });
+
+test('fixInkCursorEscape compensates Ink fullscreen off-by-one cursorUp offset', () => {
+  // moveUp = 2 (e.g. prompt row y=22 in 24-row screen): should become moveUp = 1 (cursorUp 1 from bottom row 23)
+  assert.equal(fixInkCursorEscape('\u001b[2A\u001b[3G\u001b[?25h'), '\u001b[1A\u001b[3G\u001b[?25h');
+
+  // moveUp = 1 (e.g. bottom hint row y=23 in 24-row screen): should become moveUp = 0 (no cursorUp from bottom row 23)
+  assert.equal(fixInkCursorEscape('\u001b[1A\u001b[3G\u001b[?25h'), '\u001b[3G\u001b[?25h');
+
+  // multiline moveUp = 4: should become moveUp = 3
+  assert.equal(fixInkCursorEscape('\u001b[4A\u001b[5G\u001b[?25h'), '\u001b[3A\u001b[5G\u001b[?25h');
+
+  // other escape codes or non-cursor escapes are unaffected
+  assert.equal(fixInkCursorEscape('\u001b[31mHello\u001b[0m\n\u001b[2K'), '\u001b[31mHello\u001b[0m\n\u001b[2K');
+});
+
 

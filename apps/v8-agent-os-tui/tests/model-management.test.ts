@@ -226,3 +226,24 @@ test('sessions list focuses on first non-current session for rapid arrow-key res
 
   client.stop();
 });
+
+test('submitting a chat message when modelReady is false prompts to configure model first without sending', async () => {
+  const client = createMockClient();
+  client.modelReady = false;
+  client.setDraft('你好，我想测试一下');
+
+  let submitted = false;
+  client.submit = async () => {
+    submitted = true;
+  };
+
+  const surface = new Surface(client);
+  await surface.submit();
+
+  assert.equal(submitted, false, 'Message must not be submitted to engine');
+  assert.equal(client.draft.text, '你好，我想测试一下', 'Draft text must be preserved');
+  assert.equal(client.notice, '请先配置模型（按 F3 或输入 /setup 打开配置）。');
+
+  client.stop();
+});
+

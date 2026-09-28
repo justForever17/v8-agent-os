@@ -55,3 +55,16 @@ export function composerCursorPosition(input: ComposerCursorInput) {
     y: Math.max(0, rowsBeforeInput + currentRowOffset),
   };
 }
+
+/**
+ * Ink 7 calculates moveUp as `visibleLineCount - y` instead of `(visibleLineCount - 1) - y`
+ * in fullscreen/alternate screen mode where the output has no trailing newline.
+ * This off-by-one makes Ink move the hardware cursor 1 row too high (landing on dividers).
+ * This filter compensates the cursorUp sequence right before writing to stdout.
+ */
+export function fixInkCursorEscape(text: string): string {
+  return text.replace(/\u001b\[(\d+)A(?=\u001b\[\d+G\u001b\[\?25h)/g, (_, count) => {
+    const n = Number(count);
+    return n > 1 ? `\u001b[${n - 1}A` : '';
+  });
+}

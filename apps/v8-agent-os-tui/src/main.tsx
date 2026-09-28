@@ -10,7 +10,7 @@ import { TranscriptLayout } from './transcript-layout.js';
 import { suggestionRows } from './command-suggestions.js';
 import { localize, normalizeLocale } from './locale.js';
 import { resolveTheme, type ThemeTokens } from './theme.js';
-import { composerCursorPosition } from './composer-layout.js';
+import { composerCursorPosition, fixInkCursorEscape } from './composer-layout.js';
 import { welcomeTextRow, type WelcomeArtRow } from './welcome-art.js';
 export { messageText } from './presentation.js';
 
@@ -107,7 +107,8 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
     }
     body = viewport.rows.map(row => row.text);
     bodyTokens = viewport.rows.map(row => row.token);
-    if (!body.length) {
+    const showWelcome = !client.view.sessionId && !client.messages.length && !client.busy;
+    if (!body.length && showWelcome) {
       const welcome = surface.welcomeProjection(locale, size.small, size.chat);
       welcomeRows = size.small
         ? [welcomeTextRow('小窗口模式', 'muted'), welcomeTextRow(''), ...welcome.rows.slice(0, 4), welcomeTextRow('F3 快速配置 · /setup 打开配置页', 'muted')]
@@ -138,8 +139,36 @@ function App({ client, surface, dispatch }: { client: Client; surface: Surface; 
   </Box>;
 }
 
-export async function start(args: string[]) {
+function createPtyStdout(targetStdout: NodeJS.WriteStream): NodeJS.WriteStream {
+  const wrapped = Object.create(targetStdout);
+  wrapped.write = function (chunk: any, ...args: any[]) {
+    if (typeof chunk === 'string') {
+      return (targetStdout.write as Function).call(targetStdout, fixInkCursorEscape(chunk), ...args);
+    }
+    if (Buffer.isBuffer(chunk)) {
+      const str = chunk.toString('utf8');
+      if (str.includes('\u001b[')) {
+        return (targetStdout.write as Function).call(targetStdout, fixInkCursorEscape(str), ...args);
+      }
+    }
+    return (targetStdout.write as Function).call(targetStdout, chunk, ...args);
+  };
+  return wrapped;
+}
+
+export interface StartOptions {
+  enginePromise?: Promise<any>;
+  onClientCreated?: (client: Client) => void;
+}
+
+export async function start(args: string[], options: StartOptions = {}) {
   const client = new Client();
+  options.onClientCreated?.(client);
+  if (options.enginePromise) {
+    client.connection = 'Engine 准备中';
+    client.notice = 'Engine 正在后台准备，可立即输入内容…';
+    client.setEngineReadyPromise(options.enginePromise);
+  }
   const langIndex = args.indexOf('--lang');
   const requestedLocale = langIndex >= 0 && args[langIndex + 1] ? normalizeLocale(args[langIndex + 1]) : undefined;
   if (requestedLocale) client.view.locale = requestedLocale;
@@ -197,7 +226,8 @@ export async function start(args: string[]) {
   let suspended = false;
   // The entrypoint already requires a real TTY. An inherited CI flag must not
   // make Ink hide every frame until unmount in this explicit interactive app.
-  const draw = () => render(<App client={client} surface={surface} dispatch={dispatch} />, { interactive: true, exitOnCtrlC: false, patchConsole: false, maxFps: 20, incrementalRendering: true, alternateScreen: true });
+  const ptyStdout = createPtyStdout(process.stdout);
+  const draw = () => render(<App client={client} surface={surface} dispatch={dispatch} />, { stdout: ptyStdout, interactive: true, exitOnCtrlC: false, patchConsole: false, maxFps: 20, incrementalRendering: true, alternateScreen: true });
   const resume = () => {
     if (done || !suspended) return; suspended = false;
     if (editingAbort) return;
@@ -262,7 +292,17 @@ export async function start(args: string[]) {
     }
   }) : () => {};
   try {
-    await client.initialize();
+    if (options.enginePromise) {
+      try {
+        await client.waitForEngineReady();
+      } catch (err: any) {
+        client.connection = '启动失败';
+        client.notice = `Engine 启动失败：${err?.message || err}。按两次 Ctrl+C 退出。`;
+        client.changed();
+      }
+    } else {
+      await client.initialize();
+    }
     if (requestedLocale && client.view.locale !== requestedLocale) { client.view.locale = requestedLocale; client.save(true); client.changed(); }
     if (requestedSession && client.instance.instanceId) await client.attach(requestedSession);
     else if (client.instance.instanceId) {

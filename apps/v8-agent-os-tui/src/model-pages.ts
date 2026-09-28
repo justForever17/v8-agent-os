@@ -130,6 +130,7 @@ export async function assignRoleModel(surface: Surface, role: string, modelRef: 
       method: 'POST',
       body: { planDigest: plan.planDigest },
     });
+    await surface.client.refreshModelReadiness();
   }
 }
 
@@ -138,6 +139,7 @@ export async function setDefaultModel(surface: Surface, modelRef: string, catego
     method: 'POST',
     body: { modelRef, category },
   });
+  await surface.client.refreshModelReadiness();
 }
 
 export async function modelsHub(surface: Surface, activeTab = 0) {
@@ -414,6 +416,7 @@ export function enterCredentialsWizard(surface: Surface, provider: typeof PRESET
         body: values,
         timeoutMs: 60000,
       });
+      await surface.client.refreshModelReadiness();
     } finally {
       values.apiKey = '';
     }

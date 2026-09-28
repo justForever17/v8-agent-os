@@ -108,12 +108,24 @@ def main() -> int:
             # code page when a temporary test root contains non-ASCII text.
             print(path.as_posix().encode("ascii", "backslashreplace").decode("ascii"))
         return 0
-    command = [sys.executable, "-m", "pytest", *(str(path) for path in targets), "-q", "--tb=short"]
+    import os
+    import pytest
+
+    os.chdir(ENGINE_ROOT)
+    if str(ENGINE_ROOT) not in sys.path:
+        sys.path.insert(0, str(ENGINE_ROOT))
+
+    pytest_args = [*(str(path) for path in targets), "-q", "--tb=short"]
     if args.portable_ci:
         for node_id in sorted(PORTABLE_CI_DESELECTS):
-            command.extend(["--deselect", node_id])
-    return subprocess.call(command, cwd=ENGINE_ROOT)
+            pytest_args.extend(["--deselect", node_id])
+
+    exit_code = pytest.main(pytest_args)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(int(exit_code))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
+

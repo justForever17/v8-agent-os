@@ -247,9 +247,11 @@ interface ToolRendererProps {
 }
 
 function FileChangeToolRenderer({ toolInvocation }: ToolRendererProps) {
+    const t = useT();
     const args = toolInvocation.args || {};
     const rawPath = String(args.TargetFile || args.AbsolutePath || args.filePath || args.path || '');
     const normalizedPath = rawPath.replace(/\\/g, '/');
+    const fallbackTitle = t("web.chat.file_change");
     const resultStr = typeof toolInvocation.result === 'string' ? toolInvocation.result : JSON.stringify(toolInvocation.result || '');
     let diffStr: string | undefined = undefined;
     if (resultStr.includes('[diff_block_start]')) {
@@ -268,8 +270,8 @@ function FileChangeToolRenderer({ toolInvocation }: ToolRendererProps) {
     }
     const fileItem: EditedFileItem = {
         id: toolInvocation.toolCallId || normalizedPath,
-        filePath: normalizedPath || '文件变更',
-        fileName: normalizedPath.split('/').pop() || normalizedPath || '文件变更',
+        filePath: normalizedPath || fallbackTitle,
+        fileName: normalizedPath.split('/').pop() || normalizedPath || fallbackTitle,
         additions: addCount,
         deletions: delCount,
         diff: diffStr,

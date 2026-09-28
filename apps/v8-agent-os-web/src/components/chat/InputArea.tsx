@@ -580,7 +580,7 @@ export function InputArea({
 
     const initCommand = React.useMemo<CommandPresetSummary>(() => ({
         name: "init",
-        summary: t("web.composer.init.summary") || "探测工作区依赖并生成/更新 AGENTS.md 规范",
+        summary: t("web.composer.init.summary"),
         initAction: "workspace_contract_init",
     }), [t]);
     const memoryCommand = React.useMemo<CommandPresetSummary>(() => ({
@@ -1442,7 +1442,7 @@ export function InputArea({
                 if (selectedCommandPreset?.name === "init" || input.trim() === "/init") {
                     nextData.projectInit = true;
                     if (!input.trim() || input.trim() === "/init") {
-                        nextData.messageOverride = "请探测当前工作区的技术栈和项目结构，初始化并生成符合 V8OS 标准的 AGENTS.md 协作规范契约。";
+                        nextData.messageOverride = t("web.composer.init.prompt");
                     }
                 }
                 if (pendingSpecMode) {

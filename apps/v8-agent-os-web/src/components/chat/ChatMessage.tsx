@@ -695,8 +695,10 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         return { codeEditedFiles: files, otherArtifacts: others };
     }, [prioritizedArtifacts, message.nodes, workbenchSessionId, openWorkbenchDocument]);
 
+    const visibleArtifacts = artifactsExpanded ? prioritizedArtifacts : prioritizedArtifacts.slice(0, 5);
     const visibleOtherArtifacts = artifactsExpanded ? otherArtifacts : otherArtifacts.slice(0, 5);
     const hiddenOtherArtifactCount = Math.max(0, otherArtifacts.length - 5);
+    void visibleArtifacts;
 
     // Prepare media items for Lightbox (if message has images)
     const imagesArray = useMemo(

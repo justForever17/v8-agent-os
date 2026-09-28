@@ -1418,12 +1418,16 @@ def build_supervisor_system_content(
         fut_kernel = executor.submit(_probe_kernel)
         fut_reg = executor.submit(_probe_registry)
 
-        host_alerts_line, context_preparation_ms["hostAlerts"] = fut_alerts.result()
-        host_load_line, context_preparation_ms["hostLoad"] = fut_load.result()
-        memory_context, context_preparation_ms["memoryContext"] = fut_mem.result()
-        (workspace_rules_context, workspace_rules_diagnostics), context_preparation_ms["workspaceRules"] = fut_rules.result()
-        (workspace_state_context, workspace_state_diagnostics), context_preparation_ms["engineeringKernel"] = fut_kernel.result()
-        runtime_registry_context, context_preparation_ms["runtimeRegistry"] = fut_reg.result()
+        host_alerts_line, alerts_ms = fut_alerts.result()
+        host_load_line, load_ms = fut_load.result()
+        memory_context, _ = fut_mem.result()
+        (workspace_rules_context, workspace_rules_diagnostics), _ = fut_rules.result()
+        (workspace_state_context, workspace_state_diagnostics), kernel_ms = fut_kernel.result()
+        runtime_registry_context, _ = fut_reg.result()
+
+        context_preparation_ms["hostAlerts"] = alerts_ms
+        context_preparation_ms["hostLoad"] = load_ms
+        context_preparation_ms["engineeringKernel"] = kernel_ms
 
     host_alerts_context = f"{host_alerts_line}\n" if host_alerts_line else ""
     env_context = (

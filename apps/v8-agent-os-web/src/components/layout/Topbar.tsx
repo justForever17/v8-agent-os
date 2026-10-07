@@ -14,6 +14,7 @@ import { BackgroundPlaybackControls, BackgroundVideoSoundToggle } from "@/compon
 import { useT } from "@/components/providers/LocaleProvider";
 import { ShellWindowControls } from "./ShellWindowControls";
 import { RpaTopbarOverlay } from "./RpaTopbarOverlay";
+import { FeaturePackMenu } from "./FeaturePackMenu";
 
 const subscribeToShellSurface = () => () => {};
 const readShellSurface = () => Boolean(window.v8osShell?.isShell);
@@ -67,6 +68,7 @@ export function WebTopbar({ windowControls }: { windowControls?: ReactNode }) {
                 <LocaleToggle />
                 <BackgroundVideoSoundToggle />
                 <BackgroundPlaybackControls />
+                <FeaturePackMenu />
                 <ThemeToggle />
                 <UserProfile />
                 </>

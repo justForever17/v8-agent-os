@@ -26,7 +26,7 @@ TARGETS = {
     "macos-x64": ("macos", "x64", ENGINE / ".python" / "bin" / "python3"),
     "macos-arm64": ("macos", "arm64", ENGINE / ".python" / "bin" / "python3"),
 }
-IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".venv", ".git", ".tmp", "tmp", "reports", "workspace", "node_modules", ".plugin-release-assets", "logs"}
+IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".venv", ".git", ".tmp", "tmp", "reports", "workspace", "node_modules", ".plugin-release-assets", "bundled-assets", "logs"}
 IGNORED_FILES = {".env", ".env.local", ".env.production", "secret.db", "secrets.db"}
 
 

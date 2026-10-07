@@ -1027,9 +1027,24 @@ function formatCommandSummary(pythonExe: string, args: string[]) {
     return `${pythonExe} ${args.map((item) => (item.includes(" ") ? `"${item}"` : item)).join(" ")}`;
 }
 
-function pipSourceStrategy(locale: string) {
+function isChineseNetworkPreferred(locale: string): boolean {
     const normalized = String(locale || "").trim().toLowerCase();
-    if (!normalized.startsWith("zh")) return PIP_SOURCE_STRATEGY;
+    if (normalized.startsWith("zh")) return true;
+    const envRegion = String(process.env.V8OS_REGION || process.env.TZ || "").toLowerCase();
+    if (envRegion === "cn" || envRegion.includes("shanghai") || envRegion.includes("beijing") || envRegion.includes("chongqing")) {
+        return true;
+    }
+    try {
+        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone.toLowerCase();
+        if (timeZone.includes("shanghai") || timeZone.includes("chongqing") || timeZone.includes("urumqi") || timeZone.includes("harbin") || timeZone === "prc") {
+            return true;
+        }
+    } catch {}
+    return false;
+}
+
+function pipSourceStrategy(locale: string) {
+    if (!isChineseNetworkPreferred(locale)) return PIP_SOURCE_STRATEGY;
     const official = PIP_SOURCE_STRATEGY.filter((source) => source.id === "official");
     const mirrors = PIP_SOURCE_STRATEGY.filter((source) => source.id !== "official");
     return [...mirrors, ...official];
@@ -1328,7 +1343,7 @@ function featurePackAssetSources(asset: FeaturePackAsset, locale = "en") {
             .map((value) => String(value || "").trim())
             .filter(Boolean),
     ));
-    if (!String(locale || "").trim().toLowerCase().startsWith("zh")) return sources;
+    if (!isChineseNetworkPreferred(locale)) return sources;
     const domesticRank = (value: string) => {
         const host = new URL(value).hostname.toLowerCase();
         if (host === "hf-mirror.com") return 0;

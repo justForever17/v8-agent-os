@@ -93,11 +93,12 @@ function sha256File(filePath) {
 }
 
 function verifyBundledFeaturePackAssets(featurePackRequirements, platform) {
-  if (!new Set(["windows-x64", "linux-x64"]).has(platform)) return [];
+  const bundledRoot = path.join(featurePackRequirements, "bundled-assets");
+  if (!fs.existsSync(bundledRoot)) return [];
   const checks = [{
     name: "featurePacks.offlineManifest",
-    path: path.join(featurePackRequirements, "bundled-assets", "manifest.json"),
-    ok: fs.existsSync(path.join(featurePackRequirements, "bundled-assets", "manifest.json")),
+    path: path.join(bundledRoot, "manifest.json"),
+    ok: fs.existsSync(path.join(bundledRoot, "manifest.json")),
   }];
   for (const manifestName of [
     "creative-media-image-analysis.manifest.json",

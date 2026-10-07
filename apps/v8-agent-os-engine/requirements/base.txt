@@ -24,3 +24,4 @@ websockets>=15,<16
 psutil
 aiohttp
 apscheduler
+tenacity>=8.2.3,<9.2.0

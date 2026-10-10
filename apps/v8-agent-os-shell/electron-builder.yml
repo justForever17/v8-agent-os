@@ -12,6 +12,8 @@ files:
   - lib/**/*
   - scripts/**/*
   - package.json
+afterPack: scripts/desktop-after-pack.cjs
+afterAllArtifactBuild: scripts/desktop-after-all-artifact-build.cjs
 extraResources:
   - from: ../../release-manifest.json
     to: v8os/release-manifest.json

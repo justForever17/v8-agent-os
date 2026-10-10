@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -43,7 +44,29 @@ function enginePython() {
         path.join(ENGINE_DIR, ".python", "bin", "python3"),
         path.join(ENGINE_DIR, ".python", "bin", "python"),
       ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) || (process.platform === "win32" ? "python" : "python3");
+  const found = candidates.find((candidate) => fs.existsSync(candidate));
+  if (found) return found;
+
+  if (process.platform === "win32") {
+    const runtimeZip = path.join(ENGINE_DIR, "python-runtime.zip");
+    if (fs.existsSync(runtimeZip)) {
+      try {
+        const extractRes = spawnSync("tar.exe", ["-xf", runtimeZip, "-C", ENGINE_DIR], { stdio: "ignore" });
+        if (extractRes.status !== 0) {
+          spawnSync("powershell.exe", [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `Microsoft.PowerShell.Archive\\Expand-Archive -LiteralPath '${runtimeZip}' -DestinationPath '${ENGINE_DIR}' -Force`,
+          ], { stdio: "ignore" });
+        }
+        const unpacked = candidates.find((candidate) => fs.existsSync(candidate));
+        if (unpacked) return unpacked;
+      } catch {}
+    }
+  }
+
+  return process.platform === "win32" ? "python" : "python3";
 }
 
 function nodeRuntime(extraEnv = {}) {

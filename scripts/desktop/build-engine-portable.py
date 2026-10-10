@@ -57,7 +57,7 @@ def copy_tree(source: Path, destination: Path) -> None:
                 continue
             if name in IGNORED_DIRS or name in IGNORED_FILES or name == "tests" or name == "native" or name.startswith("pytest-of-"):
                 result.add(name)
-            elif name.endswith((".pyc", ".pyo", ".db", ".log")) or name.startswith(".env"):
+            elif name.endswith((".pyc", ".pyo", ".db", ".log")) or name.startswith(".env") or name == "python-runtime.zip":
                 result.add(name)
         return result
     shutil.copytree(source, destination, symlinks=True, ignore=ignored)

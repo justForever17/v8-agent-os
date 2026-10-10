@@ -40,6 +40,7 @@
       Abort "V8OS optional system component cleanup was not confirmed."
     ${EndIf}
     SetOutPath "$INSTDIR"
+    RMDir /r "$INSTDIR\resources\v8os\apps\v8-agent-os-engine\.python"
   ${EndIf}
 !macroend
 
@@ -132,5 +133,28 @@ v8os_git_install_failed:
     MessageBox MB_OK|MB_ICONEXCLAMATION|MB_TOPMOST "Git could not be installed automatically.$\r$\nV8 Agent OS will finish installing, but optional Git parallel isolation will remain unavailable."
   ${EndIf}
 v8os_git_install_done:
+  IfFileExists "$INSTDIR\resources\v8os\apps\v8-agent-os-engine\python-runtime.zip" 0 v8os_python_unpack_done
+  DetailPrint "Extracting embedded Python runtime..."
+  IfFileExists "$SYSDIR\tar.exe" v8os_tar_present v8os_tar_fallback
+
+v8os_tar_present:
+  nsExec::ExecToStack /TIMEOUT=120000 '"$SYSDIR\tar.exe" -xf "$INSTDIR\resources\v8os\apps\v8-agent-os-engine\python-runtime.zip" -C "$INSTDIR\resources\v8os\apps\v8-agent-os-engine"'
+  Pop $2
+  Pop $3
+  StrCmp $2 "0" v8os_python_unpack_ok v8os_tar_fallback
+
+v8os_tar_fallback:
+  StrCpy $1 "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
+  IfFileExists "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" 0 +2
+    StrCpy $1 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+  nsExec::ExecToStack /TIMEOUT=180000 '"$1" -NoProfile -NonInteractive -WindowStyle Hidden -Command "Microsoft.PowerShell.Archive\Expand-Archive -LiteralPath \"$INSTDIR\resources\v8os\apps\v8-agent-os-engine\python-runtime.zip\" -DestinationPath \"$INSTDIR\resources\v8os\apps\v8-agent-os-engine\" -Force"'
+  Pop $2
+  Pop $3
+
+v8os_python_unpack_ok:
+  Delete "$INSTDIR\resources\v8os\apps\v8-agent-os-engine\python-runtime.zip"
+  DetailPrint "Embedded Python runtime extracted."
+
+v8os_python_unpack_done:
 !macroend
 !endif

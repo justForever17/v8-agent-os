@@ -296,6 +296,22 @@ try {
   if (!resourceRoot) throw new Error("Packaged resource root was not found");
   const engineRoot = path.join(resourceRoot, "apps", "v8-agent-os-engine");
   const posix = !platform.startsWith("windows-");
+  if (!posix) {
+    const primaryPython = path.join(engineRoot, ".python", "python.exe");
+    const runtimeZip = path.join(engineRoot, "python-runtime.zip");
+    if (!fs.existsSync(primaryPython) && fs.existsSync(runtimeZip)) {
+      console.log(`[verify-desktop-package-layout] Unpacking ${runtimeZip} into ${engineRoot}...`);
+      const tar = spawnSync("tar.exe", ["-xf", runtimeZip, "-C", engineRoot]);
+      if (tar.status !== 0) {
+        spawnSync("powershell.exe", [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `Microsoft.PowerShell.Archive\\Expand-Archive -LiteralPath '${runtimeZip}' -DestinationPath '${engineRoot}' -Force`,
+        ]);
+      }
+    }
+  }
   const python = posix
     ? [path.join(resourceRoot, "apps", "v8-agent-os-engine", ".python", "bin", "python3"), path.join(resourceRoot, "apps", "v8-agent-os-engine", ".python", "bin", "python")]
     : [path.join(resourceRoot, "apps", "v8-agent-os-engine", ".python", "python.exe")];

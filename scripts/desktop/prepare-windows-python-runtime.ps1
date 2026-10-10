@@ -811,6 +811,31 @@ Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", "import mai
   V8_AGENT_OS_DISABLE_BYTECODE = "1"
 }
 
+Write-Host "Pruning and optimizing portable Python runtime..."
+$sitePackages = Join-Path $runtimeDir "Lib\site-packages"
+$pruneDirs = @("tests", "test", "testing", "unit_tests", "doc", "docs", "examples", "example", "samples", "sample", "idlelib")
+if (Test-Path $sitePackages) {
+  Get-ChildItem -Path $sitePackages -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object {
+    $_.Name.ToLowerInvariant() -in $pruneDirs
+  } | ForEach-Object {
+    Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+Get-ChildItem -Path $runtimeDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+  $_.Extension -match "^\.(pyc|pyo|h|hpp|c|cpp)$"
+} | ForEach-Object {
+  Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+}
+Get-ChildItem -Path $runtimeDir -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object {
+  $_.Name -eq "__pycache__"
+} | ForEach-Object {
+  Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+}
+Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", "import main; print('V8OS_ENGINE_PRUNED_IMPORT_OK')") -Environment @{
+  V8_AGENT_OS_HOME = $probeHome
+  V8_AGENT_OS_DISABLE_BYTECODE = "1"
+}
+
 $target = if ($Architecture -eq "arm64") { "windows-arm64" } else { "windows-x64" }
 $requirementsSha256 = (Get-FileHash -LiteralPath $requirementsFile -Algorithm SHA256).Hash.ToLowerInvariant()
 $runtimeReceipt = [ordered]@{
@@ -824,4 +849,29 @@ $runtimeReceipt = [ordered]@{
 ($runtimeReceipt | ConvertTo-Json -Depth 4) + "`n" | Set-Content -LiteralPath (Join-Path $runtimeDir "v8os-runtime.json") -Encoding utf8
 
 Remove-Item -LiteralPath $getPipPath -Force -ErrorAction SilentlyContinue
+
+Write-Host "Archiving pruned portable Python runtime to python-runtime.zip..."
+$runtimeZipPath = Join-Path $EngineDir "python-runtime.zip"
+if (Test-Path -LiteralPath $runtimeZipPath) {
+  Remove-Item -LiteralPath $runtimeZipPath -Force -ErrorAction SilentlyContinue
+}
+Push-Location $EngineDir
+try {
+  $tarExe = "tar.exe"
+  $hasTar = $null -ne (Get-Command $tarExe -ErrorAction SilentlyContinue)
+  if ($hasTar) {
+    & $tarExe -a -c -f $runtimeZipPath ".python"
+    if ($LASTEXITCODE -ne 0) { throw "tar.exe failed to archive portable Python runtime" }
+  } else {
+    Compress-Archive -Path ".python" -DestinationPath $runtimeZipPath -Force
+  }
+} finally {
+  Pop-Location
+}
+if (-not (Test-Path -LiteralPath $runtimeZipPath)) {
+  throw "Failed to create python-runtime.zip at $runtimeZipPath"
+}
+$zipSizeMb = [math]::Round((Get-Item $runtimeZipPath).Length / 1MB, 2)
+Write-Host "Created python-runtime.zip ($zipSizeMb MB) successfully."
+
 Write-Host "Portable Python runtime is ready."

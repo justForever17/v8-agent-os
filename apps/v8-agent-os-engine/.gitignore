@@ -13,3 +13,4 @@ workspace/
 *.log
 bin/v8-sandbox-host
 bin/v8-sandbox-host.exe
+python-runtime.zip

@@ -77,7 +77,7 @@ jobs:
           node apps/v8-agent-os-cli/bin/v8os.mjs --help
           installed=$(find "$RUNNER_TEMP/tui-prefix/lib/node_modules" -name "v8os-tui.mjs" | head -n 1)
           python apps/v8-agent-os-tui/tests/terminal_pty.py --node "$(command -v node)" --bin "$installed" --state "$RUNNER_TEMP/tui-node20-state" --expect-unsupported-node
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: v8os-tui-npm
           path: out/tui/V8OS-TUI-*.tgz

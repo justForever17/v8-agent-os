@@ -51,7 +51,7 @@ jobs:
           if(`v8-os-v${manifest.release.version}`!==tag) throw Error('Manifest mismatch');
           fs.appendFileSync(process.env.GITHUB_OUTPUT,`commit=${commit}\nversion=${manifest.release.version}\nchannel=${manifest.release.channel}\nprerelease=${manifest.release.channel!=='stable'}\n`);
           NODE
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.run_id }}

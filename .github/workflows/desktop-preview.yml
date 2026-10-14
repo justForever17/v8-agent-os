@@ -328,7 +328,7 @@ jobs:
 
       - name: Upload portable Engine asset for npm Core Base
         if: matrix.os == 'windows' || matrix.os == 'macos'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: v8os-engine-${{ matrix.id }}
           path: ${{ runner.temp }}/v8os-engine-${{ matrix.id }}/*
@@ -586,7 +586,7 @@ jobs:
 
       - name: Upload Linux desktop smoke diagnostics
         if: failure() && matrix.os == 'linux'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: v8os-desktop-smoke-diagnostics-${{ matrix.id }}
           path: desktop-smoke-diagnostics-${{ matrix.id }}/**
@@ -837,7 +837,7 @@ jobs:
 
       - name: Upload macOS desktop smoke diagnostics
         if: failure() && matrix.os == 'macos'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: v8os-desktop-smoke-diagnostics-${{ matrix.id }}
           path: desktop-smoke-diagnostics-${{ matrix.id }}/**
@@ -848,7 +848,7 @@ jobs:
 
       - name: Upload Windows desktop smoke diagnostics
         if: failure() && matrix.os == 'windows'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: v8os-desktop-smoke-diagnostics-${{ matrix.id }}
           path: desktop-smoke-diagnostics/**
@@ -875,7 +875,7 @@ jobs:
           --output-dir apps/v8-agent-os-shell/desktop-release-assets
 
       - name: Upload desktop platform artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: v8os-desktop-${{ matrix.id }}
           path: apps/v8-agent-os-shell/desktop-release-assets/**
@@ -963,7 +963,7 @@ jobs:
 
       - name: Upload clean Linux smoke diagnostics
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: v8os-desktop-clean-smoke-diagnostics-${{ matrix.id }}-${{ matrix.distro }}
           path: |

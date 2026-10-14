@@ -284,21 +284,21 @@ jobs:
 
       - name: Download Server build artifact
         if: needs.plan.outputs.server_enabled == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: v8os-server-linux-x64
           path: release-input/server
 
       - name: Download TUI npm artifact
         if: needs.plan.outputs.tui_enabled == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: v8os-tui-npm
           path: release-input/tui
 
       - name: Download Desktop build artifacts
         if: needs.plan.outputs.desktop_enabled == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: v8os-desktop-*
           path: release-input/desktop
@@ -306,7 +306,7 @@ jobs:
 
       - name: Download portable Engine build artifacts
         if: needs.plan.outputs.server_enabled == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: v8os-engine-*
           path: release-input/server
@@ -314,14 +314,14 @@ jobs:
 
       - name: Download Android build artifact
         if: needs.plan.outputs.android_enabled == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: phone-android-package
           path: release-input/phone/android
 
       - name: Download iOS build artifact
         if: needs.plan.outputs.ios_enabled == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: phone-ios-package
           path: release-input/phone/ios
